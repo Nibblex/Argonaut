@@ -50,6 +50,12 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.0.1" date="2026-07-19">
+      <description>
+        <p>Switch to the maintained argos-translate-lt engine, with a much
+        lighter dependency footprint.</p>
+      </description>
+    </release>
     <release version="1.0.0" date="2026-07-19">
       <description>
         <p>First public release.</p>

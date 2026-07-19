@@ -7,7 +7,7 @@ as an offline translation engine.
 ## Requirements
 
 ```bash
-pip install PyQt5 argostranslate argos-translate-files langdetect
+pip install PyQt5 argos-translate-lt argos-translate-files langdetect
 ```
 
 You need at least one language package installed, for example:

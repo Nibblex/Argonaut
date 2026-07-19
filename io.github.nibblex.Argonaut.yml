@@ -12,11 +12,11 @@
 #   flatpak-builder --user --install --force-clean build-dir io.github.nibblex.Argonaut.yml
 app-id: io.github.nibblex.Argonaut
 runtime: org.kde.Platform
-runtime-version: '5.15-24.08'
+runtime-version: '5.15-25.08'
 sdk: org.kde.Sdk
 # the PyQt BaseApp ships PyQt5, so it is not in requirements.txt
 base: com.riverbankcomputing.PyQt.BaseApp
-base-version: '5.15-24.08'
+base-version: '5.15-25.08'
 command: argonaut
 
 finish-args:
@@ -26,8 +26,10 @@ finish-args:
   - --device=dri
   # argospm downloads language models
   - --share=network
-  # read documents and write translations anywhere in the home folder
-  - --filesystem=home
+  # read documents and write translations; broader access can be granted
+  # by the user with Flatseal if needed
+  - --filesystem=xdg-documents:rw
+  - --filesystem=xdg-download:rw
 
 cleanup-commands:
   - /app/cleanup-BaseApp.sh

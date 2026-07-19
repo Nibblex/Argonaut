@@ -1,6 +1,6 @@
 # Runtime dependencies, also the input for flatpak-pip-generator.
 # PyQt5 is excluded on Flatpak: the PyQt BaseApp already provides it.
-argostranslate
-argos-translate-files
+argos-translate-lt
+argos-translate-files>=1.4.4
 langdetect
 pymupdf
