@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.nibblex.Argonaut</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+
+  <name>Argonaut</name>
+  <summary>Translate documents offline</summary>
+  <summary xml:lang="es">Traduce documentos sin conexión</summary>
+
+  <description>
+    <p>
+      Argonaut is a minimalist document translator. Translation runs
+      entirely on your computer using Argos Translate; your documents
+      never leave your machine.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Batch translation with automatic language detection per file</li>
+      <li>PDF translation that preserves the layout, with real progress and cancellation</li>
+      <li>Supports .txt, .docx, .odt, .odp, .pptx, .epub, .html, .srt and .pdf</li>
+      <li>Interface in English, Spanish, French, German, Italian and Portuguese</li>
+    </ul>
+  </description>
+
+  <developer id="io.github.nibblex">
+    <name>Sergio Rodríguez</name>
+  </developer>
+
+  <launchable type="desktop-id">io.github.nibblex.Argonaut.desktop</launchable>
+
+  <url type="homepage">https://github.com/Nibblex/Argonaut</url>
+  <url type="bugtracker">https://github.com/Nibblex/Argonaut/issues</url>
+  <url type="vcs-browser">https://github.com/Nibblex/Argonaut</url>
+
+  <!-- TODO: replace with a real window screenshot before submitting to
+       Flathub (required); upload it to the repo and point to the raw URL -->
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/Nibblex/Argonaut/main/data/screenshots/main-window.png</image>
+      <caption>Main window</caption>
+    </screenshot>
+  </screenshots>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#a8c7e7</color>
+    <color type="primary" scheme_preference="dark">#1e3a5f</color>
+  </branding>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="1.0.0" date="2026-07-19">
+      <description>
+        <p>First public release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

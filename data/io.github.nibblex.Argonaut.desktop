@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=Argonaut
+Comment=Translate documents offline
+Comment[es]=Traduce documentos sin conexión
+Comment[fr]=Traduisez des documents hors ligne
+Comment[de]=Dokumente offline übersetzen
+Comment[it]=Traduci documenti offline
+Comment[pt]=Traduza documentos offline
+Exec=argonaut
+Icon=io.github.nibblex.Argonaut
+Terminal=false
+Type=Application
+Categories=Utility;TextTools;Qt;
+Keywords=translate;translation;document;offline;pdf;
