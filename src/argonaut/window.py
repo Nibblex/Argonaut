@@ -264,6 +264,7 @@ class MainWindow(QMainWindow):
         for path in paths:
             ext = os.path.splitext(path)[1].lower()
             if ext in SUPPORTED_EXTS and path not in existing:
+                existing.add(path)
                 self.file_list.addItem(path)
 
     def remove_selected(self):

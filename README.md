@@ -4,6 +4,8 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/argonaut-translator)](https://pypi.org/project/argonaut-translator/)
 [![License: GPL-3.0](https://img.shields.io/github/license/Nibblex/Argonaut)](LICENSE)
 [![Release](https://img.shields.io/github/v/tag/Nibblex/Argonaut?label=release)](https://github.com/Nibblex/Argonaut/tags)
+[![CI](https://github.com/Nibblex/Argonaut/actions/workflows/ci.yml/badge.svg)](https://github.com/Nibblex/Argonaut/actions/workflows/ci.yml)
+[![Coverage](https://raw.githubusercontent.com/Nibblex/Argonaut/badges/coverage.svg)](https://github.com/Nibblex/Argonaut/actions/workflows/ci.yml)
 
 Minimalist document translator with a Qt (PyQt5) interface that uses
 [argos-translate-files](https://github.com/LibreTranslate/argos-translate-files)
@@ -94,6 +96,17 @@ the original document are not preserved in the translated copy.
 
 Supported formats: `.txt` `.docx` `.odt` `.odp` `.pptx` `.epub`
 `.html` `.srt` `.pdf`
+
+## Tests
+
+```bash
+pip install -e .[test]
+pytest
+```
+
+The suite runs Qt headless (`QT_QPA_PLATFORM=offscreen`) and needs no
+language models: translation engines are faked. Coverage is printed at
+the end of the run; CI publishes the badge on every push to `main`.
 
 ## Releasing
 
