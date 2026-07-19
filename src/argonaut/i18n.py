@@ -70,6 +70,8 @@ STRINGS = {
                       "<a href='https://github.com/LibreTranslate/argos-translate-files'>argos-translate-files</a>; "
                       "your documents never leave your machine.</p>"
                       "<p>Supported formats: {formats}</p>"
+                      "<p><a href='https://github.com/Nibblex/Argonaut'>Source "
+                      "code on GitHub</a></p>"
                       "<p>© 2026 Sergio Rodríguez · Released under the "
                       "<a href='https://choosealicense.com/licenses/gpl-3.0/'>GNU GPL v3</a> "
                       "license.</p>",
@@ -124,6 +126,8 @@ STRINGS = {
                       "<a href='https://github.com/LibreTranslate/argos-translate-files'>argos-translate-files</a>; "
                       "tus documentos nunca salen de tu máquina.</p>"
                       "<p>Formatos soportados: {formats}</p>"
+                      "<p><a href='https://github.com/Nibblex/Argonaut'>Código "
+                      "fuente en GitHub</a></p>"
                       "<p>© 2026 Sergio Rodríguez · Publicado bajo la licencia "
                       "<a href='https://choosealicense.com/licenses/gpl-3.0/'>GNU GPL v3</a>.</p>",
     },
@@ -177,6 +181,8 @@ STRINGS = {
                       "<a href='https://github.com/LibreTranslate/argos-translate-files'>argos-translate-files</a> ; "
                       "vos documents ne quittent jamais votre machine.</p>"
                       "<p>Formats pris en charge : {formats}</p>"
+                      "<p><a href='https://github.com/Nibblex/Argonaut'>Code "
+                      "source sur GitHub</a></p>"
                       "<p>© 2026 Sergio Rodríguez · Publié sous licence "
                       "<a href='https://choosealicense.com/licenses/gpl-3.0/'>GNU GPL v3</a>.</p>",
     },
@@ -230,6 +236,8 @@ STRINGS = {
                       "<a href='https://github.com/LibreTranslate/argos-translate-files'>argos-translate-files</a>; "
                       "deine Dokumente verlassen nie deinen Rechner.</p>"
                       "<p>Unterstützte Formate: {formats}</p>"
+                      "<p><a href='https://github.com/Nibblex/Argonaut'>Quellcode "
+                      "auf GitHub</a></p>"
                       "<p>© 2026 Sergio Rodríguez · Veröffentlicht unter der "
                       "<a href='https://choosealicense.com/licenses/gpl-3.0/'>GNU GPL v3</a>.</p>",
     },
@@ -283,6 +291,8 @@ STRINGS = {
                       "<a href='https://github.com/LibreTranslate/argos-translate-files'>argos-translate-files</a>; "
                       "i tuoi documenti non lasciano mai la tua macchina.</p>"
                       "<p>Formati supportati: {formats}</p>"
+                      "<p><a href='https://github.com/Nibblex/Argonaut'>Codice "
+                      "sorgente su GitHub</a></p>"
                       "<p>© 2026 Sergio Rodríguez · Rilasciato sotto licenza "
                       "<a href='https://choosealicense.com/licenses/gpl-3.0/'>GNU GPL v3</a>.</p>",
     },
@@ -336,6 +346,8 @@ STRINGS = {
                       "<a href='https://github.com/LibreTranslate/argos-translate-files'>argos-translate-files</a>; "
                       "seus documentos nunca saem da sua máquina.</p>"
                       "<p>Formatos suportados: {formats}</p>"
+                      "<p><a href='https://github.com/Nibblex/Argonaut'>Código-fonte "
+                      "no GitHub</a></p>"
                       "<p>© 2026 Sergio Rodríguez · Publicado sob a licença "
                       "<a href='https://choosealicense.com/licenses/gpl-3.0/'>GNU GPL v3</a>.</p>",
     },
