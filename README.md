@@ -19,16 +19,17 @@ argospm install translate-en_es
 
 ## Usage
 
-From a checkout:
-
-```bash
-python3 -m argonaut
-```
-
-Or install it (provides the `argonaut` command):
+Install it (provides the `argonaut` command):
 
 ```bash
 pip install argonaut-translator
+```
+
+From a checkout, install in editable mode first:
+
+```bash
+pip install -e .
+python3 -m argonaut
 ```
 
 ## Structure
