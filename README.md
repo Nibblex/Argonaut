@@ -1,5 +1,10 @@
 # Argonaut
 
+[![PyPI](https://img.shields.io/pypi/v/argonaut-translator)](https://pypi.org/project/argonaut-translator/)
+[![Python versions](https://img.shields.io/pypi/pyversions/argonaut-translator)](https://pypi.org/project/argonaut-translator/)
+[![License: GPL-3.0](https://img.shields.io/github/license/Nibblex/Argonaut)](LICENSE)
+[![Release](https://img.shields.io/github/v/tag/Nibblex/Argonaut?label=release)](https://github.com/Nibblex/Argonaut/tags)
+
 Minimalist document translator with a Qt (PyQt5) interface that uses
 [argos-translate-files](https://github.com/LibreTranslate/argos-translate-files)
 as an offline translation engine.
