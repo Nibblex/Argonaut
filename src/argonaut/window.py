@@ -2,7 +2,8 @@
 
 import os
 
-from PyQt5.QtCore import QSettings, Qt
+from PyQt5.QtCore import QSettings, QUrl, Qt
+from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
@@ -16,6 +17,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -112,11 +114,16 @@ class MainWindow(QMainWindow):
         self.out_btn.clicked.connect(self.choose_output_dir)
         self.output_label = QLabel()
         self.output_label.setStyleSheet("color: gray;")
+        self.open_out_btn = QToolButton()
+        self.open_out_btn.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        self.open_out_btn.setEnabled(False)
+        self.open_out_btn.clicked.connect(self.open_output_dir)
         self.reset_out_btn = QToolButton()
         self.reset_out_btn.setText("×")
         self.reset_out_btn.clicked.connect(self.reset_output_dir)
         out_row.addWidget(self.out_btn)
         out_row.addWidget(self.output_label, 1)
+        out_row.addWidget(self.open_out_btn)
         out_row.addWidget(self.reset_out_btn)
         layout.addLayout(out_row)
 
@@ -176,6 +183,7 @@ class MainWindow(QMainWindow):
             self.output_dir = out
             self.output_label.setText(out)
             self.output_label.setStyleSheet("")
+            self.open_out_btn.setEnabled(True)
 
     def closeEvent(self, event):
         settings = QSettings()
@@ -206,6 +214,7 @@ class MainWindow(QMainWindow):
         self.clear_btn.setText(tr("clear"))
         self.out_btn.setText(tr("output"))
         self.out_btn.setToolTip(tr("output_tooltip"))
+        self.open_out_btn.setToolTip(tr("output_open_tooltip"))
         self.reset_out_btn.setToolTip(tr("output_reset_tooltip"))
         if self.output_dir is None:
             self.output_label.setText(tr("output_default"))
@@ -289,11 +298,17 @@ class MainWindow(QMainWindow):
             self.output_dir = path
             self.output_label.setText(path)
             self.output_label.setStyleSheet("")
+            self.open_out_btn.setEnabled(True)
 
     def reset_output_dir(self):
         self.output_dir = None
         self.output_label.setText(tr("output_default"))
         self.output_label.setStyleSheet("color: gray;")
+        self.open_out_btn.setEnabled(False)
+
+    def open_output_dir(self):
+        if self.output_dir and os.path.isdir(self.output_dir):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.output_dir))
 
     # --- translation ---
     def start_translation(self):
