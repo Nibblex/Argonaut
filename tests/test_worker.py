@@ -21,8 +21,11 @@ def make_langs():
     return english, spanish
 
 
-def make_worker(files, src, dst, languages=(), output_dir=None):
-    return TranslateWorker(src, dst, list(languages), files, output_dir=output_dir)
+def make_worker(files, src, dst, languages=(), output_dir=None, skip_existing=False):
+    return TranslateWorker(
+        src, dst, list(languages), files,
+        output_dir=output_dir, skip_existing=skip_existing,
+    )
 
 
 def test_output_path_next_to_original(qapp):
@@ -97,6 +100,59 @@ def test_run_reports_failures_and_continues(qapp, tmp_path):
 
     assert len(failed) == 1
     assert done == [str(tmp_path / "good_es.txt")]
+
+
+def test_run_skips_existing_output(qapp, tmp_path):
+    english, spanish = make_langs()
+    doc = tmp_path / "doc.txt"
+    doc.write_text("hello world")
+    existing = tmp_path / "doc_es.txt"
+    existing.write_text("already translated")
+    skipped, done = [], []
+    worker = make_worker([str(doc)], english, spanish, skip_existing=True)
+    worker.file_skipped.connect(lambda i, out: skipped.append(out))
+    worker.file_done.connect(lambda i, out, secs: done.append(out))
+    worker.run()
+
+    assert skipped == [str(existing)]
+    assert done == []
+    assert existing.read_text() == "already translated"  # left untouched
+
+
+def test_run_overwrites_when_skip_disabled(qapp, tmp_path):
+    english, spanish = make_langs()
+    doc = tmp_path / "doc.txt"
+    doc.write_text("hello world")
+    out = tmp_path / "doc_es.txt"
+    out.write_text("stale")
+    skipped, done = [], []
+    worker = make_worker([str(doc)], english, spanish)  # skip_existing defaults off
+    worker.file_skipped.connect(lambda i, o: skipped.append(o))
+    worker.file_done.connect(lambda i, o, secs: done.append(o))
+    worker.run()
+
+    assert skipped == []
+    assert done == [str(out)]
+    assert "HELLO WORLD" in out.read_text()
+
+
+def test_skip_happens_before_language_detection(qapp, tmp_path):
+    # an existing output is skipped without reading the file, so a document
+    # that detection could not handle still counts as skipped, not failed
+    _, spanish = make_langs()
+    doc = tmp_path / "doc.txt"
+    doc.write_text("")  # empty: language detection would fail
+    (tmp_path / "doc_es.txt").write_text("x")
+    skipped, failed = [], []
+    worker = make_worker(
+        [str(doc)], None, spanish, languages=[spanish], skip_existing=True
+    )
+    worker.file_skipped.connect(lambda i, out: skipped.append(out))
+    worker.file_failed.connect(lambda i, err: failed.append(err))
+    worker.run()
+
+    assert skipped == [str(tmp_path / "doc_es.txt")]
+    assert failed == []
 
 
 def fake_pkg(from_name="English", to_name="Spanish"):

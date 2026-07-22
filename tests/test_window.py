@@ -58,16 +58,47 @@ def test_defaults_detect_language_and_spanish_target(window):
 
 def test_add_paths_filters_and_deduplicates(window):
     window.add_paths(["/a/doc.txt", "/a/doc.txt", "/a/image.jpg", "/a/book.epub"])
-    items = [window.file_list.item(i).text() for i in range(window.file_list.count())]
-    assert items == ["/a/doc.txt", "/a/book.epub"]
+    assert window.paths() == ["/a/doc.txt", "/a/book.epub"]
 
 
 def test_remove_selected(window):
     window.add_paths(["/a/one.txt", "/a/two.txt"])
     window.file_list.item(0).setSelected(True)
     window.remove_selected()
-    items = [window.file_list.item(i).text() for i in range(window.file_list.count())]
-    assert items == ["/a/two.txt"]
+    assert window.paths() == ["/a/two.txt"]
+
+
+def test_human_size():
+    from argonaut.window import human_size
+
+    assert human_size(0) == "0 B"
+    assert human_size(512) == "512 B"
+    assert human_size(1536) == "1.5 KB"
+    assert human_size(3 * 2**20) == "3.0 MB"
+    assert human_size(2 * 2**30) == "2.0 GB"
+
+
+def test_file_list_shows_individual_and_total_sizes(window, tmp_path):
+    from argonaut.window import human_size
+
+    small = tmp_path / "small.txt"
+    small.write_bytes(b"x" * 1024)  # 1 KB
+    big = tmp_path / "big.txt"
+    big.write_bytes(b"x" * (2 * 2**20))  # 2 MB
+    window.add_paths([str(small), str(big)])
+
+    assert window.file_list.item(0).text() == f"{small}  ·  1.0 KB"
+    assert window.file_list.item(1).text() == f"{big}  ·  2.0 MB"
+    # total sums both, in a translated summary line
+    assert window.total_label.text() == tr(
+        "batch_total", count=2, size=human_size(1024 + 2 * 2**20)
+    )
+
+    window.file_list.item(0).setSelected(True)
+    window.remove_selected()
+    assert window.total_label.text() == tr("batch_total", count=1, size="2.0 MB")
+    window.clear_files()
+    assert window.total_label.text() == ""  # cleared with the list
 
 
 def test_expand_dirs_walks_folders_recursively(window, tmp_path):
@@ -80,8 +111,7 @@ def test_expand_dirs_walks_folders_recursively(window, tmp_path):
     loose.write_text("x")
 
     window.add_paths(window.expand_dirs([str(docs), str(loose)]))
-    items = [window.file_list.item(i).text() for i in range(window.file_list.count())]
-    assert items == [
+    assert window.paths() == [
         str(docs / "b.txt"),
         str(docs / "sub" / "a.epub"),
         str(loose),
@@ -180,7 +210,11 @@ def test_translation_rejects_missing_model(window, monkeypatch):
 
 def test_finished_summary_lists_results_and_errors(window):
     window.worker = None
-    window.results = [("ok", "/a/doc_es.txt"), ("error", "boom")]
+    window.results = [
+        ("ok", "/a/doc_es.txt"),
+        ("skipped", "/a/done_es.txt"),
+        ("error", "boom"),
+    ]
 
     class DoneWorker:
         def isRunning(self):
@@ -193,11 +227,38 @@ def test_finished_summary_lists_results_and_errors(window):
     window.on_finished()
     text = window.status.text()
     assert "/a/doc_es.txt" in text
+    assert tr("skipped_header") in text and "/a/done_es.txt" in text
     assert "boom" in text
     assert not window.clear_status_btn.isHidden()
     window.clear_status()
     assert window.status.text() == tr("ready")
     assert window.clear_status_btn.isHidden()
+
+
+def test_skip_existing_setting_persists_and_reaches_the_worker(qtbot, langs, tmp_path):
+    win = MainWindow()
+    qtbot.addWidget(win)
+    assert not win.skip_existing_cb.isChecked()  # default: overwrite
+    win.skip_existing_cb.setChecked(True)
+    win.close()
+
+    win2 = MainWindow()
+    qtbot.addWidget(win2)
+    assert win2.skip_existing_cb.isChecked()
+
+    doc = tmp_path / "doc.txt"
+    doc.write_text("hello world")
+    out = tmp_path / "doc_es.txt"
+    out.write_text("already there")
+    win2.add_paths([str(doc)])
+    win2.from_combo.setCurrentIndex(1)  # English
+    win2.to_combo.setCurrentIndex(1)  # Spanish
+    win2.start_translation()
+    qtbot.waitUntil(lambda: not win2.worker.isRunning(), timeout=5000)
+    qtbot.waitUntil(lambda: win2.translate_btn.isEnabled(), timeout=5000)
+
+    assert out.read_text() == "already there"  # skipped, not overwritten
+    assert tr("skipped_header") in win2.status.text()
 
 
 def test_add_files_dialog(window, monkeypatch, tmp_path):
@@ -207,7 +268,7 @@ def test_add_files_dialog(window, monkeypatch, tmp_path):
         QFileDialog, "getOpenFileNames", staticmethod(lambda *a, **k: ([str(doc)], ""))
     )
     window.add_files()
-    assert window.file_list.item(0).text() == str(doc)
+    assert window.paths() == [str(doc)]
 
 
 def test_choose_output_dir_dialog(window, monkeypatch, tmp_path):

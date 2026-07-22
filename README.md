@@ -31,7 +31,9 @@ pip install PyQt5 argos-translate-lt argos-translate-files langdetect psutil
 You need at least one language package installed. Open
 *Settings → Manage language packages…*, pick the pairs you want and
 press "Install selected"; the dialog lists every package from the Argos
-index with its size and lets you remove the installed ones. They can
+index with its version and download size, filters by installation state,
+and lets you remove or update the installed ones (a package with a newer
+version in the index is flagged and can be updated in place). They can
 also be installed from the command line with `argospm install
 translate-en_es`.
 
@@ -98,9 +100,12 @@ defaulting to four) are saved as soon as they change.
    is detected automatically, so you can mix files in different
    languages in the same batch.
 2. Drag documents or whole folders onto the window (dropped folders are
-   walked recursively) or add them with "Add…".
+   walked recursively) or add them with "Add…". Each file shows its size
+   and the list footer shows the batch total.
 3. Optionally pick a folder with "Output…" where all translations are
    saved (× returns to the default behaviour: next to each original).
+   Tick "Skip files already translated" to leave existing outputs
+   untouched, which makes an interrupted batch resumable.
 4. Press "Translate". Each translated file is saved with the target
    language suffix (e.g. `report_es.docx`).
 5. During translation you can press "Cancel": the operation stops

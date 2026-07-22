@@ -49,6 +49,16 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.3.0" date="2026-07-22">
+      <description>
+        <p>The language package manager now shows each package's version and
+        download size, flags the ones with an update available and can
+        update them in place, and filters the list by installation state
+        (installed, not installed, update available). The main window lists
+        the size of every file and the batch total, and a new option skips
+        documents that have already been translated.</p>
+      </description>
+    </release>
     <release version="1.2.0" date="2026-07-22">
       <description>
         <p>Language packages can now be installed and removed from the

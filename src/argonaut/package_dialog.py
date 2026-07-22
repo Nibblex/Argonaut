@@ -4,6 +4,7 @@ the GUI."""
 from PyQt5.QtCore import QSettings, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -25,8 +26,9 @@ from argonaut.worker import (
 )
 
 PACKAGE_ROLE = Qt.UserRole
-INSTALLED_ROLE = Qt.UserRole + 1
+STATE_ROLE = Qt.UserRole + 1  # "available", "installed" or "outdated"
 SIZE_ROLE = Qt.UserRole + 2
+INSTALLED_VERSION_ROLE = Qt.UserRole + 3  # None when not installed
 
 
 class PackageDialog(QDialog):
@@ -41,6 +43,7 @@ class PackageDialog(QDialog):
         self.setMinimumSize(380, 420)
         self.installer = None
         self.sizer = None
+        self.operation = "install"  # or "update": only changes the summary
         self.errors = []
 
         layout = QVBoxLayout(self)
@@ -49,15 +52,29 @@ class PackageDialog(QDialog):
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText(tr("pkg_filter"))
         self.filter_edit.textChanged.connect(self.apply_filter)
+        self.state_combo = QComboBox()
+        for key, state in (
+            ("pkg_state_all", "all"),
+            ("pkg_state_installed", "installed"),
+            ("pkg_state_available", "available"),
+            ("pkg_state_outdated", "outdated"),
+        ):
+            self.state_combo.addItem(tr(key), state)
+        self.state_combo.currentIndexChanged.connect(self.apply_filter)
         self.select_all = QCheckBox(tr("pkg_select_all"))
         self.select_all.clicked.connect(self.on_select_all_clicked)
         filter_row.addWidget(self.filter_edit, 1)
+        filter_row.addWidget(self.state_combo)
         filter_row.addWidget(self.select_all)
         layout.addLayout(filter_row)
 
         self.package_list = QListWidget()
         self.package_list.itemChanged.connect(self.update_buttons)
         layout.addWidget(self.package_list, 1)
+
+        self.selection_label = QLabel()
+        self.selection_label.setStyleSheet("color: gray;")
+        layout.addWidget(self.selection_label)
 
         self.progress = QProgressBar()
         self.progress.setVisible(False)
@@ -71,6 +88,9 @@ class PackageDialog(QDialog):
         self.install_btn = QPushButton(tr("pkg_install_btn"))
         self.install_btn.setEnabled(False)
         self.install_btn.clicked.connect(self.start_install)
+        self.update_btn = QPushButton(tr("pkg_update_btn"))
+        self.update_btn.setEnabled(False)
+        self.update_btn.clicked.connect(self.start_update)
         self.remove_btn = QPushButton(tr("pkg_remove_btn"))
         self.remove_btn.setEnabled(False)
         self.remove_btn.clicked.connect(self.start_remove)
@@ -80,6 +100,7 @@ class PackageDialog(QDialog):
         self.close_btn = QPushButton(tr("close"))
         self.close_btn.clicked.connect(self.close)
         buttons.addWidget(self.install_btn, 1)
+        buttons.addWidget(self.update_btn, 1)
         buttons.addWidget(self.remove_btn, 1)
         buttons.addWidget(self.cancel_btn, 1)
         buttons.addWidget(self.close_btn)
@@ -94,28 +115,45 @@ class PackageDialog(QDialog):
         if error:
             self.status.setText(tr("pkg_load_failed", error=error))
             return
-        installed = packages.installed_pairs()
         unmeasured = []
         for row, pkg in enumerate(available):
             item = QListWidgetItem()
             item.setData(PACKAGE_ROLE, pkg)
             item.setData(SIZE_ROLE, QSettings().value(size_key(pkg), 0, type=int))
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            self.set_installed(item, packages.pair(pkg) in installed)
             self.package_list.addItem(item)
             if not item.data(SIZE_ROLE):
                 unmeasured.append((row, pkg))
-        self.apply_filter(self.filter_edit.text())
+        self.refresh_states()
+        self.apply_filter()
         self.status.setText(tr("ready"))
         if unmeasured:
             self.sizer = PackageSizeWorker(unmeasured, parent=self)
             self.sizer.size_ready.connect(self.on_size_ready)
             self.sizer.start()
 
-    def set_installed(self, item, installed):
-        item.setData(INSTALLED_ROLE, installed)
-        self.refresh_item_text(item)
-        item.setCheckState(Qt.Unchecked)
+    def refresh_states(self):
+        """Recomputes every package's state against what is installed on
+        disk. Items whose state changed are unchecked, so a finished
+        operation clears its selection while failures stay selected."""
+        versions = packages.installed_versions()
+        for item in self.all_items():
+            pkg = item.data(PACKAGE_ROLE)
+            installed = versions.get(packages.pair(pkg))
+            if installed is None:
+                state = "available"
+            elif packages.is_newer(pkg.package_version, installed):
+                state = "outdated"
+            else:
+                state = "installed"
+            if item.data(STATE_ROLE) == state and (
+                item.data(INSTALLED_VERSION_ROLE) == installed
+            ):
+                continue
+            item.setData(STATE_ROLE, state)
+            item.setData(INSTALLED_VERSION_ROLE, installed)
+            item.setCheckState(Qt.Unchecked)
+            self.refresh_item_text(item)
 
     def refresh_item_text(self, item):
         pkg = item.data(PACKAGE_ROLE)
@@ -123,9 +161,19 @@ class PackageDialog(QDialog):
         size = item.data(SIZE_ROLE)
         if size:
             text += f"  ·  {max(1, round(size / 2**20))} MB"
-        if item.data(INSTALLED_ROLE):
+        # the version in use if installed, otherwise the one on offer
+        text += f"  ·  v{item.data(INSTALLED_VERSION_ROLE) or pkg.package_version}"
+        state = item.data(STATE_ROLE)
+        if state == "installed":
             text += f"  ({tr('pkg_installed')})"
+        elif state == "outdated":
+            text += f"  ({tr('pkg_outdated', version=pkg.package_version)})"
         item.setText(text)
+
+    def all_items(self):
+        return [
+            self.package_list.item(i) for i in range(self.package_list.count())
+        ]
 
     def on_size_ready(self, row, size):
         if not size:
@@ -134,20 +182,32 @@ class PackageDialog(QDialog):
         item.setData(SIZE_ROLE, size)
         QSettings().setValue(size_key(item.data(PACKAGE_ROLE)), size)
         self.refresh_item_text(item)
+        if item.checkState() == Qt.Checked:
+            self.update_selection_summary()
 
-    def apply_filter(self, text):
-        text = text.strip().lower()
-        for i in range(self.package_list.count()):
-            item = self.package_list.item(i)
-            item.setHidden(bool(text) and text not in item.text().lower())
-        self.sync_select_all()
+    def apply_filter(self, *_):
+        """Hides the packages that match neither the typed text nor the
+        selected installation state. "Installed" covers the outdated ones
+        too: they are installed, only not at the latest version."""
+        text = self.filter_edit.text().strip().lower()
+        wanted = self.state_combo.currentData()
+        for item in self.all_items():
+            state = item.data(STATE_ROLE)
+            matches_state = (
+                wanted == "all"
+                or state == wanted
+                or (wanted == "installed" and state == "outdated")
+            )
+            item.setHidden(
+                (bool(text) and text not in item.text().lower())
+                or not matches_state
+            )
+        # a hidden package is not part of the selection, so the summary and
+        # the buttons must be recomputed whenever the visible set changes
+        self.update_buttons()
 
     def visible_items(self):
-        return [
-            self.package_list.item(i)
-            for i in range(self.package_list.count())
-            if not self.package_list.item(i).isHidden()
-        ]
+        return [item for item in self.all_items() if not item.isHidden()]
 
     def on_select_all_clicked(self, checked):
         state = Qt.Checked if checked else Qt.Unchecked
@@ -167,33 +227,57 @@ class PackageDialog(QDialog):
             state = Qt.PartiallyChecked
         self.select_all.setCheckState(state)
 
-    def checked_items(self, installed):
+    def checked_items(self, *states):
+        # only visible packages count: filtering one out drops it from the
+        # selection, so "select all" and the actions honour the filter
         return [
             item
-            for item in (
-                self.package_list.item(i)
-                for i in range(self.package_list.count())
-            )
-            if item.checkState() == Qt.Checked
-            and bool(item.data(INSTALLED_ROLE)) == installed
+            for item in self.visible_items()
+            if item.checkState() == Qt.Checked and item.data(STATE_ROLE) in states
         ]
 
     def update_buttons(self):
         self.sync_select_all()
+        self.update_selection_summary()
         idle = self.installer is None
-        self.install_btn.setEnabled(
-            idle and bool(self.checked_items(installed=False))
-        )
+        self.install_btn.setEnabled(idle and bool(self.checked_items("available")))
+        self.update_btn.setEnabled(idle and bool(self.checked_items("outdated")))
         self.remove_btn.setEnabled(
-            idle and bool(self.checked_items(installed=True))
+            idle and bool(self.checked_items("installed", "outdated"))
         )
 
-    # --- installation ---
+    def update_selection_summary(self):
+        """Shows how many packages are checked and their combined download
+        size; '≥' marks a total that omits sizes still being measured."""
+        items = self.checked_items("available", "installed", "outdated")
+        if not items:
+            self.selection_label.clear()
+            return
+        sizes = [item.data(SIZE_ROLE) for item in items]
+        total = sum(sizes)
+        if not total:
+            size_text = "—"
+        else:
+            prefix = "≥ " if 0 in sizes else ""
+            size_text = f"{prefix}{max(1, round(total / 2**20))} MB"
+        self.selection_label.setText(
+            tr("pkg_selection", count=len(items), size=size_text)
+        )
+
+    # --- installation and updates ---
     def start_install(self):
-        items = self.checked_items(installed=False)
+        self.start_download(self.checked_items("available"), "install")
+
+    def start_update(self):
+        # installing replaces the older version, so an update is the same
+        # download with a different wording in the summary
+        self.start_download(self.checked_items("outdated"), "update")
+
+    def start_download(self, items, operation):
         if not items:
             return
         self.errors = []
+        self.operation = operation
         self.set_busy(True)
         self.installer = PackageInstallWorker(
             [item.data(PACKAGE_ROLE) for item in items], parent=self
@@ -208,9 +292,11 @@ class PackageDialog(QDialog):
 
     def set_busy(self, busy):
         self.filter_edit.setEnabled(not busy)
+        self.state_combo.setEnabled(not busy)
         self.select_all.setEnabled(not busy)
         self.package_list.setEnabled(not busy)
         self.install_btn.setEnabled(not busy)
+        self.update_btn.setEnabled(not busy)
         self.remove_btn.setEnabled(not busy)
         self.cancel_btn.setVisible(busy)
         self.cancel_btn.setEnabled(busy)
@@ -237,14 +323,16 @@ class PackageDialog(QDialog):
         cancelled = self.installer is not None and self.installer.was_cancelled()
         self.installer = None
         self.set_busy(False)
-        self.refresh_installed_marks()
+        self.refresh_states()
+        self.apply_filter()  # the packages just installed may leave the view
         self.update_buttons()
 
         lines = []
         if cancelled:
             lines.append(tr("cancelled"))
         if count:
-            lines.append(tr("pkg_done", count=count))
+            done_key = "pkg_updated" if self.operation == "update" else "pkg_done"
+            lines.append(tr(done_key, count=count))
         if self.errors:
             lines.append(tr("errors_header"))
             lines.extend(f"  ✗ {e}" for e in self.errors)
@@ -252,18 +340,9 @@ class PackageDialog(QDialog):
         if count:
             self.packages_changed.emit()
 
-    def refresh_installed_marks(self):
-        installed = packages.installed_pairs()
-        for i in range(self.package_list.count()):
-            item = self.package_list.item(i)
-            if not item.data(INSTALLED_ROLE) and (
-                packages.pair(item.data(PACKAGE_ROLE)) in installed
-            ):
-                self.set_installed(item, True)
-
     # --- removal ---
     def start_remove(self):
-        items = self.checked_items(installed=True)
+        items = self.checked_items("installed", "outdated")
         if not items:
             return
         answer = QMessageBox.question(
@@ -282,7 +361,6 @@ class PackageDialog(QDialog):
                 errors.append(f"{pkg.from_name} → {pkg.to_name}: {exc}")
             else:
                 removed += 1
-                self.set_installed(item, False)
 
         lines = []
         if removed:
@@ -291,6 +369,8 @@ class PackageDialog(QDialog):
             lines.append(tr("errors_header"))
             lines.extend(f"  ✗ {e}" for e in errors)
         self.status.setText("\n".join(lines) or tr("ready"))
+        self.refresh_states()
+        self.apply_filter()  # removed packages may leave the view
         self.update_buttons()
         if removed:
             self.packages_changed.emit()

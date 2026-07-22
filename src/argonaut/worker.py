@@ -144,29 +144,39 @@ class TranslateWorker(QThread):
     file_started = pyqtSignal(int, str)
     file_done = pyqtSignal(int, str, float)  # index, output path, seconds
     file_failed = pyqtSignal(int, str)
+    file_skipped = pyqtSignal(int, str)  # index, existing output path
     progress_update = pyqtSignal(int, int)  # chunks done, total (0 = unknown)
     phase_changed = pyqtSignal(str)  # description of the current phase
     language_detected = pyqtSignal(int, str)  # file index, detected language
     finished_all = pyqtSignal()
 
-    def __init__(self, src_lang, dst_lang, languages, files, output_dir=None, parent=None):
+    def __init__(self, src_lang, dst_lang, languages, files, output_dir=None,
+                 skip_existing=False, parent=None):
         super().__init__(parent)
         self.src_lang = src_lang
         self.dst_lang = dst_lang
         self.languages = languages
         self.files = files
         self.output_dir = output_dir  # None = next to each original
+        self.skip_existing = skip_existing
         self._cancelled = False
         self._last_emit = 0.0
         self._current_name = ""
 
-    def get_output_path(self, underlying_translation, file_path):
+    def output_path_for(self, to_code, file_path):
         # same naming scheme as the library, but honouring the output
         # folder if one was chosen
         name, ext = os.path.splitext(os.path.basename(file_path))
-        to_code = underlying_translation.to_lang.code
         dir_path = self.output_dir or os.path.dirname(file_path)
         return os.path.join(dir_path, f"{name}_{to_code}{ext}")
+
+    def get_output_path(self, underlying_translation, file_path):
+        return self.output_path_for(underlying_translation.to_lang.code, file_path)
+
+    def expected_output_path(self, file_path):
+        # the target is always the destination language, whatever the source
+        # turns out to be, so the skip check needs no language detection
+        return self.output_path_for(self.dst_lang.code, file_path)
 
     def cancel(self):
         self._cancelled = True
@@ -199,6 +209,11 @@ class TranslateWorker(QThread):
             self._current_name = os.path.basename(path)
             file_start = time.monotonic()
             try:
+                if self.skip_existing:
+                    existing = self.expected_output_path(path)
+                    if os.path.exists(existing):
+                        self.file_skipped.emit(i, existing)
+                        continue
                 translation = self.resolve_translation(i, path)
                 is_pdf = path.lower().endswith(".pdf")
                 total = count_pdf_paragraphs(path) if is_pdf else 0

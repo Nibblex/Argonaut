@@ -10,11 +10,13 @@ from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -33,6 +35,19 @@ from argonaut.i18n import LANGUAGES, current_language, set_language, tr
 from argonaut.package_dialog import PackageDialog
 from argonaut.translation import SUPPORTED_EXTS
 from argonaut.worker import ModelDownloadWorker, TranslateWorker
+
+FILE_PATH_ROLE = Qt.UserRole
+FILE_SIZE_ROLE = Qt.UserRole + 1
+
+
+def human_size(num_bytes):
+    """Human-readable byte count, e.g. 512 B, 3.4 KB, 12.0 MB."""
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            break
+        size /= 1024
+    return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
 
 
 class MainWindow(QMainWindow):
@@ -142,6 +157,10 @@ class MainWindow(QMainWindow):
         self.file_list.setSelectionMode(QListWidget.ExtendedSelection)
         layout.addWidget(self.file_list, 1)
 
+        self.total_label = QLabel()
+        self.total_label.setStyleSheet("color: gray;")
+        layout.addWidget(self.total_label)
+
         self.hint = QLabel()
         self.hint.setWordWrap(True)
         self.hint.setStyleSheet("color: gray; font-size: 11px;")
@@ -155,7 +174,7 @@ class MainWindow(QMainWindow):
         self.remove_btn = QPushButton()
         self.remove_btn.clicked.connect(self.remove_selected)
         self.clear_btn = QPushButton()
-        self.clear_btn.clicked.connect(self.file_list.clear)
+        self.clear_btn.clicked.connect(self.clear_files)
         files_row.addWidget(self.add_btn)
         files_row.addWidget(self.open_file_btn)
         files_row.addWidget(self.remove_btn)
@@ -182,6 +201,13 @@ class MainWindow(QMainWindow):
         out_row.addWidget(self.open_out_btn)
         out_row.addWidget(self.reset_out_btn)
         layout.addLayout(out_row)
+
+        # --- skip already-translated files ---
+        self.skip_existing_cb = QCheckBox()
+        self.skip_existing_cb.toggled.connect(
+            lambda checked: QSettings().setValue("skip_existing", checked)
+        )
+        layout.addWidget(self.skip_existing_cb)
 
         # --- progress and action ---
         self.progress = QProgressBar()
@@ -250,6 +276,9 @@ class MainWindow(QMainWindow):
             self.output_label.setText(out)
             self.output_label.setStyleSheet("")
             self.open_out_btn.setEnabled(True)
+        self.skip_existing_cb.setChecked(
+            settings.value("skip_existing", False, type=bool)
+        )
 
     def closeEvent(self, event):
         if self.downloader is not None and self.downloader.isRunning():
@@ -425,6 +454,7 @@ class MainWindow(QMainWindow):
         self.from_combo.setItemText(0, tr("detect_language"))
         self.swap_btn.setToolTip(tr("swap_tooltip"))
         self.hint.setText(tr("hint", formats=" ".join(SUPPORTED_EXTS)))
+        self.update_total_size()
         self.add_btn.setText(tr("add"))
         self.open_file_btn.setText(tr("open"))
         self.open_file_btn.setToolTip(tr("open_tooltip"))
@@ -434,6 +464,8 @@ class MainWindow(QMainWindow):
         self.out_btn.setToolTip(tr("output_tooltip"))
         self.open_out_btn.setToolTip(tr("output_open_tooltip"))
         self.reset_out_btn.setToolTip(tr("output_reset_tooltip"))
+        self.skip_existing_cb.setText(tr("skip_existing"))
+        self.skip_existing_cb.setToolTip(tr("skip_existing_tooltip"))
         if self.output_dir is None:
             self.output_label.setText(tr("output_default"))
         self.clear_status_btn.setText(tr("clear_status"))
@@ -484,24 +516,57 @@ class MainWindow(QMainWindow):
         )
         self.add_paths(paths)
 
+    def paths(self):
+        return [
+            self.file_list.item(i).data(FILE_PATH_ROLE)
+            for i in range(self.file_list.count())
+        ]
+
     def add_paths(self, paths):
-        existing = {
-            self.file_list.item(i).text() for i in range(self.file_list.count())
-        }
+        existing = set(self.paths())
         for path in paths:
             ext = os.path.splitext(path)[1].lower()
             if ext in SUPPORTED_EXTS and path not in existing:
                 existing.add(path)
-                self.file_list.addItem(path)
+                self.add_file_item(path)
+        self.update_total_size()
+
+    def add_file_item(self, path):
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        item = QListWidgetItem(f"{path}  ·  {human_size(size)}")
+        item.setData(FILE_PATH_ROLE, path)
+        item.setData(FILE_SIZE_ROLE, size)
+        self.file_list.addItem(item)
+
+    def update_total_size(self):
+        count = self.file_list.count()
+        if not count:
+            self.total_label.clear()
+            return
+        total = sum(
+            self.file_list.item(i).data(FILE_SIZE_ROLE) or 0 for i in range(count)
+        )
+        self.total_label.setText(
+            tr("batch_total", count=count, size=human_size(total))
+        )
+
+    def clear_files(self):
+        self.file_list.clear()
+        self.update_total_size()
 
     def open_selected(self):
         for item in self.file_list.selectedItems():
-            if os.path.exists(item.text()):
-                QDesktopServices.openUrl(QUrl.fromLocalFile(item.text()))
+            path = item.data(FILE_PATH_ROLE)
+            if os.path.exists(path):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def remove_selected(self):
         for item in self.file_list.selectedItems():
             self.file_list.takeItem(self.file_list.row(item))
+        self.update_total_size()
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -552,7 +617,7 @@ class MainWindow(QMainWindow):
 
     # --- translation ---
     def start_translation(self):
-        files = [self.file_list.item(i).text() for i in range(self.file_list.count())]
+        files = self.paths()
         if not files:
             QMessageBox.information(
                 self, tr("no_files_title"), tr("no_files_msg")
@@ -582,7 +647,10 @@ class MainWindow(QMainWindow):
         self.progress.setFormat("%p%")
 
         self.worker = TranslateWorker(
-            src, dst, self.languages, files, output_dir=self.output_dir, parent=self
+            src, dst, self.languages, files,
+            output_dir=self.output_dir,
+            skip_existing=self.skip_existing_cb.isChecked(),
+            parent=self,
         )
         self.worker.file_started.connect(self.on_file_started)
         self.worker.progress_update.connect(self.on_progress)
@@ -590,6 +658,7 @@ class MainWindow(QMainWindow):
         self.worker.language_detected.connect(self.on_language_detected)
         self.worker.file_done.connect(self.on_file_done)
         self.worker.file_failed.connect(self.on_file_failed)
+        self.worker.file_skipped.connect(self.on_file_skipped)
         self.worker.finished_all.connect(self.on_finished)
         self.worker.start()
 
@@ -682,10 +751,14 @@ class MainWindow(QMainWindow):
     def on_file_failed(self, index, error):
         self.results.append(("error", error))
 
+    def on_file_skipped(self, index, out_path):
+        self.results.append(("skipped", out_path))
+
     def on_finished(self):
         cancelled = self.worker is not None and self.worker.was_cancelled()
         self.set_busy(False)
         ok = [r for kind, r in self.results if kind == "ok"]
+        skipped = [r for kind, r in self.results if kind == "skipped"]
         errors = [r for kind, r in self.results if kind == "error"]
         lines = []
         if cancelled:
@@ -693,6 +766,9 @@ class MainWindow(QMainWindow):
         if ok:
             lines.append(tr("translated_header"))
             lines.extend(f"  → {p}" for p in ok)
+        if skipped:
+            lines.append(tr("skipped_header"))
+            lines.extend(f"  ↷ {p}" for p in skipped)
         if errors:
             lines.append(tr("errors_header"))
             lines.extend(f"  ✗ {e}" for e in errors)
