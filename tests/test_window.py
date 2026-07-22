@@ -539,11 +539,10 @@ def test_cpu_threads_change_applies_and_persists(qtbot, langs, monkeypatch):
     qtbot.addWidget(win2)
     assert win2.cpu_threads == 1
     assert win2.threads_menu.actions()[0].isChecked()
-    win2.change_backend("nllb")  # ineffective without the model, but harmless
     monkeypatch.setattr(
         argonaut.window.nllb, "is_model_installed", lambda path=None: True
     )
-    win2.apply_backend("nllb")
+    win2.change_backend("nllb")
     assert captured[-1] == 1  # the NLLB engine receives the configured value
 
 
