@@ -17,6 +17,7 @@
     <p>Features:</p>
     <ul>
       <li>Batch translation with automatic language detection per file</li>
+      <li>Language packages installed and removed from the application itself</li>
       <li>PDF translation that preserves the layout, with real progress and cancellation</li>
       <li>Supports .txt, .docx, .odt, .odp, .pptx, .epub, .html, .srt and .pdf</li>
       <li>Interface in English, Spanish, French, German, Italian and Portuguese</li>
@@ -48,6 +49,16 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.2.0" date="2026-07-22">
+      <description>
+        <p>Language packages can now be installed and removed from the
+        application itself, with sizes, filtering and download progress,
+        so the argospm command line is no longer needed. The number of
+        CPU threads used by the translation engine is configurable from
+        the new Settings menu, the progress bar estimates the remaining
+        time, and whole folders can be dropped onto the window.</p>
+      </description>
+    </release>
     <release version="1.1.0" date="2026-07-22">
       <description>
         <p>Optional NLLB-200 translation engine with noticeably better

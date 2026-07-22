@@ -9,6 +9,15 @@ from argonaut.window import MainWindow
 from tests.conftest import FakeLanguage, FakeTranslation
 
 
+def fake_installed_languages(languages):
+    """Mimics argostranslate's lru_cached get_installed_languages."""
+    def get():
+        return list(languages)
+
+    get.cache_clear = lambda: None
+    return get
+
+
 @pytest.fixture
 def langs(monkeypatch):
     english = FakeLanguage("en", "English")
@@ -17,7 +26,7 @@ def langs(monkeypatch):
     monkeypatch.setattr(
         argonaut.window.argostranslate.translate,
         "get_installed_languages",
-        lambda: [english, spanish],
+        fake_installed_languages([english, spanish]),
     )
     return english, spanish
 
@@ -31,7 +40,9 @@ def window(qtbot, langs):
 
 def test_no_installed_languages_disables_translation(qtbot, monkeypatch):
     monkeypatch.setattr(
-        argonaut.window.argostranslate.translate, "get_installed_languages", lambda: []
+        argonaut.window.argostranslate.translate,
+        "get_installed_languages",
+        fake_installed_languages([]),
     )
     win = MainWindow()
     qtbot.addWidget(win)
@@ -57,6 +68,24 @@ def test_remove_selected(window):
     window.remove_selected()
     items = [window.file_list.item(i).text() for i in range(window.file_list.count())]
     assert items == ["/a/two.txt"]
+
+
+def test_expand_dirs_walks_folders_recursively(window, tmp_path):
+    docs = tmp_path / "docs"
+    (docs / "sub").mkdir(parents=True)
+    (docs / "b.txt").write_text("x")
+    (docs / "image.jpg").write_text("x")  # filtered later by add_paths
+    (docs / "sub" / "a.epub").write_text("x")
+    loose = tmp_path / "loose.txt"
+    loose.write_text("x")
+
+    window.add_paths(window.expand_dirs([str(docs), str(loose)]))
+    items = [window.file_list.item(i).text() for i in range(window.file_list.count())]
+    assert items == [
+        str(docs / "b.txt"),
+        str(docs / "sub" / "a.epub"),
+        str(loose),
+    ]
 
 
 def test_open_selected_files(window, monkeypatch, tmp_path):
@@ -211,7 +240,46 @@ def test_full_translation_through_the_window(window, qtbot, tmp_path):
 def test_format_duration():
     assert MainWindow.format_duration(0) == "00:00"
     assert MainWindow.format_duration(65.7) == "01:05"
-    assert MainWindow.format_duration(3671) == "61:11"
+    assert MainWindow.format_duration(3599) == "59:59"
+    assert MainWindow.format_duration(3600) == "1h"
+    assert MainWindow.format_duration(3671) == "1h 01m"
+    assert MainWindow.format_duration(2 * 3600 + 35 * 60) == "2h 35m"
+    assert MainWindow.format_duration(24 * 3600) == "1d"
+    assert MainWindow.format_duration(24 * 3600 + 3 * 3600 + 59 * 60) == "1d 3h"
+    assert MainWindow.format_duration(72 * 3600) == "3d"
+
+
+def test_eta_estimation(window, monkeypatch):
+    t = [100.0]
+    monkeypatch.setattr(argonaut.window.time, "monotonic", lambda: t[0])
+
+    assert window.estimate_eta(0, 100) is None  # first sample only calibrates
+    t[0] += 10
+    assert window.estimate_eta(20, 100) == pytest.approx(40.0)  # 2/s, 80 left
+    t[0] += 10
+    assert window.estimate_eta(40, 100) == pytest.approx(30.0)
+    assert window.estimate_eta(100, 100) is None  # finished: nothing left
+    assert window.estimate_eta(0, 7) is None  # new total resets the estimator
+    t[0] += 0.5
+    assert window.estimate_eta(3, 7) is None  # too early to be reliable
+
+    window.reset_eta()
+    t[0] += 10
+    assert window.estimate_eta(50, 100) is None  # reset discards the old pace
+
+
+def test_progress_format_includes_eta(window, monkeypatch):
+    t = [0.0]
+    monkeypatch.setattr(argonaut.window.time, "monotonic", lambda: t[0])
+    window.on_progress(0, 100)
+    assert window.progress.format() == "%p% — 0/100"  # no estimate yet
+    t[0] += 60
+    window.on_progress(50, 100)
+    assert window.progress.format() == "%p% — 50/100 — ~01:00"
+    window.on_progress(0, 0)  # indeterminate phase resets the estimator
+    t[0] += 60
+    window.on_progress(50, 100)
+    assert window.progress.format() == "%p% — 50/100"
 
 
 def test_backend_switch_and_persistence(qtbot, langs, monkeypatch):
@@ -224,7 +292,9 @@ def test_backend_switch_and_persistence(qtbot, langs, monkeypatch):
         argonaut.window.nllb, "is_model_installed", lambda path=None: True
     )
     monkeypatch.setattr(
-        argonaut.window.nllb, "get_installed_languages", lambda path=None: fake_langs
+        argonaut.window.nllb,
+        "get_installed_languages",
+        lambda path=None, threads=None: fake_langs,
     )
 
     win = MainWindow()
@@ -253,7 +323,10 @@ def test_backend_switch_keeps_language_selection(window, monkeypatch):
     monkeypatch.setattr(
         argonaut.window.nllb,
         "get_installed_languages",
-        lambda path=None: [FakeLanguage("en", "English"), FakeLanguage("es", "Spanish")],
+        lambda path=None, threads=None: [
+            FakeLanguage("en", "English"),
+            FakeLanguage("es", "Spanish"),
+        ],
     )
     window.from_combo.setCurrentIndex(1)  # English
     window.to_combo.setCurrentIndex(1)  # Spanish
@@ -301,7 +374,10 @@ def test_backend_download_flow(window, monkeypatch, qtbot):
     monkeypatch.setattr(
         argonaut.window.nllb,
         "get_installed_languages",
-        lambda path=None: [FakeLanguage("en", "English"), FakeLanguage("es", "Spanish")],
+        lambda path=None, threads=None: [
+            FakeLanguage("en", "English"),
+            FakeLanguage("es", "Spanish"),
+        ],
     )
 
     window.change_backend("nllb")
@@ -319,7 +395,10 @@ def test_engine_label_shows_active_backend(window, monkeypatch):
     monkeypatch.setattr(
         argonaut.window.nllb,
         "get_installed_languages",
-        lambda path=None: [FakeLanguage("en", "English"), FakeLanguage("es", "Spanish")],
+        lambda path=None, threads=None: [
+            FakeLanguage("en", "English"),
+            FakeLanguage("es", "Spanish"),
+        ],
     )
     window.change_backend("nllb")
     assert window.engine_label.text() == tr("engine_status", name="NLLB-200")
@@ -336,7 +415,10 @@ def test_remove_nllb_model(window, monkeypatch):
     monkeypatch.setattr(
         argonaut.window.nllb,
         "get_installed_languages",
-        lambda path=None: [FakeLanguage("en", "English"), FakeLanguage("es", "Spanish")],
+        lambda path=None, threads=None: [
+            FakeLanguage("en", "English"),
+            FakeLanguage("es", "Spanish"),
+        ],
     )
     removed = []
 
@@ -380,6 +462,98 @@ def test_resource_indicator(window):
     assert re.fullmatch(r"CPU \d+%  ·  RAM \d+ MB", window.resource_label.text())
     assert window._resource_timer.isActive()
     assert window._resource_timer.interval() == 2000
+
+
+def test_settings_menu_groups_engine_and_threads(window):
+    assert window.settings_menu.title() == tr("menu_settings")
+    actions = window.settings_menu.actions()
+    assert actions[0].menu() is window.engine_menu
+    assert actions[1].menu() is window.threads_menu
+    assert window.pkg_install_action in actions
+    assert window.nllb_remove_action in actions
+    window.change_language("es")
+    assert window.settings_menu.title() == "&Configuración"
+    assert window.engine_menu.title() == "&Motor"
+    window.change_language("en")
+
+
+def test_package_menu_action_is_translated(window):
+    assert window.pkg_install_action.text() == tr("pkg_install")
+    window.change_language("es")
+    assert window.pkg_install_action.text() == "Gestionar paquetes de idiomas…"
+    window.change_language("en")
+
+
+def test_installed_packages_refresh_the_window(qtbot, monkeypatch):
+    english = FakeLanguage("en", "English")
+    spanish = FakeLanguage("es", "Spanish")
+    installed = fake_installed_languages([])
+    monkeypatch.setattr(
+        argonaut.window.argostranslate.translate, "get_installed_languages", installed
+    )
+    win = MainWindow()
+    qtbot.addWidget(win)
+    assert not win.translate_btn.isEnabled()
+
+    monkeypatch.setattr(
+        argonaut.window.argostranslate.translate,
+        "get_installed_languages",
+        fake_installed_languages([english, spanish]),
+    )
+    win.on_packages_changed()
+    assert win.translate_btn.isEnabled()
+    assert win.to_combo.count() == 2
+    assert win.status.text() == tr("ready")
+
+
+def test_cpu_threads_default_and_menu(window):
+    import os
+
+    max_threads = os.cpu_count() or 1
+    assert window.max_threads == max_threads
+    assert window.cpu_threads == min(4, max_threads)
+    assert argonaut.window.argostranslate.settings.intra_threads == window.cpu_threads
+    actions = window.threads_menu.actions()
+    assert [a.text() for a in actions] == [str(n) for n in range(1, max_threads + 1)]
+    assert actions[window.cpu_threads - 1].isChecked()
+    window.change_language("es")
+    assert window.threads_menu.title() == "Hilos de CPU"
+    window.change_language("en")
+
+
+def test_cpu_threads_change_applies_and_persists(qtbot, langs, monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        argonaut.window.nllb,
+        "get_installed_languages",
+        lambda path=None, threads=None: captured.append(threads) or [],
+    )
+    win = MainWindow()
+    qtbot.addWidget(win)
+    win.change_cpu_threads(1)
+    assert win.cpu_threads == 1
+    assert argonaut.window.argostranslate.settings.intra_threads == 1
+    win.close()
+
+    win2 = MainWindow()
+    qtbot.addWidget(win2)
+    assert win2.cpu_threads == 1
+    assert win2.threads_menu.actions()[0].isChecked()
+    win2.change_backend("nllb")  # ineffective without the model, but harmless
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: True
+    )
+    win2.apply_backend("nllb")
+    assert captured[-1] == 1  # the NLLB engine receives the configured value
+
+
+def test_cpu_threads_saved_value_is_clamped(qtbot, langs):
+    from PyQt5.QtCore import QSettings
+
+    QSettings().setValue("cpu_threads", 9999)
+    win = MainWindow()
+    qtbot.addWidget(win)
+    assert win.cpu_threads == win.max_threads
 
 
 def test_settings_persist_between_windows(qtbot, langs):

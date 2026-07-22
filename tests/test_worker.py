@@ -1,6 +1,15 @@
+import types
+
 import pytest
 
-from argonaut.worker import TranslateWorker
+from argonaut import packages
+from argonaut.translation import CancelledError
+from argonaut.worker import (
+    PackageInstallWorker,
+    PackageListWorker,
+    PackageSizeWorker,
+    TranslateWorker,
+)
 from tests.conftest import FakeLanguage, FakeTranslation
 from tests.test_translation import ENGLISH_TEXT
 
@@ -88,6 +97,85 @@ def test_run_reports_failures_and_continues(qapp, tmp_path):
 
     assert len(failed) == 1
     assert done == [str(tmp_path / "good_es.txt")]
+
+
+def fake_pkg(from_name="English", to_name="Spanish"):
+    return types.SimpleNamespace(
+        from_code=from_name[:2].lower(),
+        to_code=to_name[:2].lower(),
+        from_name=from_name,
+        to_name=to_name,
+    )
+
+
+def test_package_list_worker_reports_packages(qapp, monkeypatch):
+    available = [fake_pkg()]
+    monkeypatch.setattr(packages, "get_available", lambda: available)
+    results = []
+    worker = PackageListWorker()
+    worker.listed.connect(lambda pkgs, err: results.append((pkgs, err)))
+    worker.run()
+    assert results == [(available, "")]
+
+
+def test_package_list_worker_reports_errors(qapp, monkeypatch):
+    def broken():
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(packages, "get_available", broken)
+    results = []
+    worker = PackageListWorker()
+    worker.listed.connect(lambda pkgs, err: results.append((pkgs, err)))
+    worker.run()
+    assert results == [([], "offline")]
+
+
+def test_package_size_worker_reports_each_row(qapp, monkeypatch):
+    sizes = {"Spanish": 10 * 2**20, "French": 0}
+    monkeypatch.setattr(packages, "get_size", lambda pkg: sizes[pkg.to_name])
+    results = []
+    worker = PackageSizeWorker([(0, fake_pkg()), (3, fake_pkg(to_name="French"))])
+    worker.size_ready.connect(lambda row, size: results.append((row, size)))
+    worker.run()
+    assert sorted(results) == [(0, 10 * 2**20), (3, 0)]
+
+
+def test_package_install_worker_continues_after_failures(qapp, monkeypatch):
+    good, bad = fake_pkg(), fake_pkg(to_name="French")
+
+    def install(pkg, on_progress=None, is_cancelled=None):
+        if pkg is bad:
+            raise RuntimeError("boom")
+        on_progress(2 * 2**20, 4 * 2**20)
+
+    monkeypatch.setattr(packages, "install", install)
+    started, progress, failed, finished = [], [], [], []
+    worker = PackageInstallWorker([bad, good])
+    worker.package_started.connect(lambda i, n, d: started.append((i, n, d)))
+    worker.progress.connect(lambda done, total: progress.append((done, total)))
+    worker.package_failed.connect(lambda d, e: failed.append((d, e)))
+    worker.install_finished.connect(lambda n: finished.append(n))
+    worker.run()
+
+    assert started == [
+        (0, 2, "English → French"),
+        (1, 2, "English → Spanish"),
+    ]
+    assert progress == [(2, 4)]
+    assert failed == [("English → French", "boom")]
+    assert finished == [1]
+
+
+def test_package_install_worker_stops_on_cancel(qapp, monkeypatch):
+    def install(pkg, on_progress=None, is_cancelled=None):
+        raise CancelledError()
+
+    monkeypatch.setattr(packages, "install", install)
+    finished = []
+    worker = PackageInstallWorker([fake_pkg(), fake_pkg(to_name="French")])
+    worker.install_finished.connect(lambda n: finished.append(n))
+    worker.run()
+    assert finished == [0]
 
 
 def test_cancelled_run_stops_before_translating(qapp, tmp_path):

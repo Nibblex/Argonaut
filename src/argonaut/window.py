@@ -1,6 +1,7 @@
 """Main application window."""
 
 import os
+import time
 
 import psutil
 from PyQt5.QtCore import QSettings, QTimer, QUrl, Qt
@@ -24,10 +25,12 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+import argostranslate.settings
 import argostranslate.translate
 
 from argonaut import nllb
 from argonaut.i18n import LANGUAGES, current_language, set_language, tr
+from argonaut.package_dialog import PackageDialog
 from argonaut.translation import SUPPORTED_EXTS
 from argonaut.worker import ModelDownloadWorker, TranslateWorker
 
@@ -42,10 +45,19 @@ class MainWindow(QMainWindow):
         self.results = []
         self.detected = {}
         self._status_base = ""
+        self._eta_total = None
+        self._eta_t0 = 0.0
+        self._eta_done0 = 0
 
         self.backend = QSettings().value("backend", "argos")
         if self.backend == "nllb" and not nllb.is_model_installed():
             self.backend = "argos"  # the model was removed from disk
+
+        self.max_threads = os.cpu_count() or 1
+        saved = QSettings().value("cpu_threads", min(4, self.max_threads), type=int)
+        self.cpu_threads = min(max(1, saved), self.max_threads)
+        argostranslate.settings.intra_threads = self.cpu_threads
+
         self.languages = self.load_languages()
 
         # --- interface language menu ---
@@ -59,8 +71,9 @@ class MainWindow(QMainWindow):
             group.addAction(action)
             self.lang_menu.addAction(action)
 
-        # --- engine menu ---
-        self.engine_menu = self.menuBar().addMenu("")
+        # --- settings menu ---
+        self.settings_menu = self.menuBar().addMenu("")
+        self.engine_menu = self.settings_menu.addMenu("")
         engine_group = QActionGroup(self)
         engine_group.setExclusive(True)
         self.argos_action = QAction("Argos Translate", self, checkable=True)
@@ -71,12 +84,24 @@ class MainWindow(QMainWindow):
             engine_group.addAction(action)
             self.engine_menu.addAction(action)
         (self.nllb_action if self.backend == "nllb" else self.argos_action).setChecked(True)
-        self.engine_menu.addSeparator()
+        self.threads_menu = self.settings_menu.addMenu("")
+        threads_group = QActionGroup(self)
+        threads_group.setExclusive(True)
+        for n in range(1, self.max_threads + 1):
+            action = QAction(str(n), self, checkable=True)
+            action.setChecked(n == self.cpu_threads)
+            action.triggered.connect(lambda _, n=n: self.change_cpu_threads(n))
+            threads_group.addAction(action)
+            self.threads_menu.addAction(action)
+        self.settings_menu.addSeparator()
+        self.pkg_install_action = QAction("", self)
+        self.pkg_install_action.triggered.connect(self.show_package_dialog)
+        self.settings_menu.addAction(self.pkg_install_action)
         self.nllb_remove_action = QAction("", self)
         self.nllb_remove_action.triggered.connect(self.remove_nllb_model)
-        self.engine_menu.addAction(self.nllb_remove_action)
+        self.settings_menu.addAction(self.nllb_remove_action)
         # kept accurate even if the model directory is deleted externally
-        self.engine_menu.aboutToShow.connect(
+        self.settings_menu.aboutToShow.connect(
             lambda: self.nllb_remove_action.setEnabled(nllb.is_model_installed())
         )
         self.nllb_remove_action.setEnabled(nllb.is_model_installed())
@@ -242,8 +267,36 @@ class MainWindow(QMainWindow):
     # --- translation engine ---
     def load_languages(self):
         if self.backend == "nllb":
-            return nllb.get_installed_languages()
+            return nllb.get_installed_languages(threads=self.cpu_threads)
         return argostranslate.translate.get_installed_languages()
+
+    def change_cpu_threads(self, n):
+        if n == self.cpu_threads:
+            return
+        self.cpu_threads = n
+        QSettings().setValue("cpu_threads", n)
+        argostranslate.settings.intra_threads = n
+        # already-loaded CTranslate2 translators keep their thread count, so
+        # fresh Language objects are created and the value applies on the
+        # next translation, when the translator is (re)instantiated
+        argostranslate.translate.get_installed_languages.cache_clear()
+        self.languages = self.load_languages()
+        self.reload_language_combos()
+
+    def show_package_dialog(self):
+        dialog = PackageDialog(self)
+        dialog.packages_changed.connect(self.on_packages_changed)
+        dialog.exec_()
+
+    def on_packages_changed(self):
+        self.languages = self.load_languages()
+        self.reload_language_combos()
+        if self.worker is None or not self.worker.isRunning():
+            self.translate_btn.setEnabled(bool(self.languages))
+            if not self.clear_status_btn.isVisible():
+                self.status.setText(
+                    tr("ready") if self.languages else tr("no_packages")
+                )
 
     def change_backend(self, name):
         if name == self.backend:
@@ -360,8 +413,11 @@ class MainWindow(QMainWindow):
         """Applies the current language to all static texts."""
         self.setWindowTitle(tr("app_title"))
         self.lang_menu.setTitle(tr("menu_language"))
+        self.settings_menu.setTitle(tr("menu_settings"))
         self.engine_menu.setTitle(tr("menu_engine"))
         self.nllb_action.setText(tr("engine_nllb"))
+        self.threads_menu.setTitle(tr("menu_threads"))
+        self.pkg_install_action.setText(tr("pkg_install"))
         self.nllb_remove_action.setText(tr("nllb_remove"))
         self.update_engine_label()
         self.help_menu.setTitle(tr("menu_help"))
@@ -453,8 +509,25 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, event):
         self.add_paths(
-            url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()
+            self.expand_dirs(
+                url.toLocalFile()
+                for url in event.mimeData().urls()
+                if url.isLocalFile()
+            )
         )
+
+    @staticmethod
+    def expand_dirs(paths):
+        """Yields files as-is and walks dropped directories recursively;
+        add_paths filters out the unsupported extensions."""
+        for path in paths:
+            if os.path.isdir(path):
+                for root, dirs, files in os.walk(path):
+                    dirs.sort()
+                    for name in sorted(files):
+                        yield os.path.join(root, name)
+            else:
+                yield path
 
     # --- output folder ---
     def choose_output_dir(self):
@@ -543,6 +616,7 @@ class MainWindow(QMainWindow):
             self.status.setText(tr("cancelling"))
 
     def on_file_started(self, index, path):
+        self.reset_eta()
         self._status_base = tr(
             "translating",
             name=os.path.basename(path),
@@ -559,9 +633,34 @@ class MainWindow(QMainWindow):
         if total > 0:
             self.progress.setRange(0, total)
             self.progress.setValue(done)
-            self.progress.setFormat(f"%p% — {done}/{total}")
+            eta = self.estimate_eta(done, total)
+            text = f"%p% — {done}/{total}"
+            if eta is not None:
+                text += f" — ~{self.format_duration(eta)}"
+            self.progress.setFormat(text)
         else:
             self.progress.setRange(0, 0)
+            self.reset_eta()
+
+    # --- remaining-time estimation ---
+    def reset_eta(self):
+        self._eta_total = None
+
+    def estimate_eta(self, done, total):
+        """Estimated seconds left, from the average pace since this phase
+        started. None while there is not enough signal (or on the sample
+        that resets the estimator when the file or phase changes)."""
+        now = time.monotonic()
+        if self._eta_total != total or done < self._eta_done0:
+            self._eta_total = total
+            self._eta_t0 = now
+            self._eta_done0 = done
+            return None
+        progressed = done - self._eta_done0
+        elapsed = now - self._eta_t0
+        if progressed <= 0 or elapsed < 1.0 or done >= total:
+            return None
+        return (total - done) * elapsed / progressed
 
     def on_file_done(self, index, out_path, seconds):
         text = f"{out_path}  ({self.format_duration(seconds)})"
@@ -572,6 +671,12 @@ class MainWindow(QMainWindow):
     @staticmethod
     def format_duration(seconds):
         minutes, secs = divmod(int(seconds), 60)
+        hours, minutes = divmod(minutes, 60)
+        days, hours = divmod(hours, 24)
+        if days:
+            return f"{days}d {hours}h" if hours else f"{days}d"
+        if hours:
+            return f"{hours}h {minutes:02d}m" if minutes else f"{hours}h"
         return f"{minutes:02d}:{secs:02d}"
 
     def on_file_failed(self, index, error):

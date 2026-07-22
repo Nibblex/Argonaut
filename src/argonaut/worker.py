@@ -6,7 +6,7 @@ import time
 from PyQt5.QtCore import QThread, pyqtSignal
 from argostranslatefiles import argostranslatefiles
 
-from argonaut import nllb
+from argonaut import nllb, packages
 from argonaut.i18n import tr
 from argonaut.pdf import FastPdfTranslator, count_pdf_paragraphs
 from argonaut.translation import CancelledError, ProgressTranslation, detect_language
@@ -45,6 +45,96 @@ class ModelDownloadWorker(QThread):
             self.download_finished.emit(False, str(exc))
         else:
             self.download_finished.emit(True, "")
+
+
+class PackageListWorker(QThread):
+    """Fetches the Argos package index without blocking the UI."""
+
+    listed = pyqtSignal(list, str)  # available packages, error ("" = ok)
+
+    def run(self):
+        try:
+            available = packages.get_available()
+        except Exception as exc:  # noqa: BLE001
+            self.listed.emit([], str(exc))
+        else:
+            self.listed.emit(available, "")
+
+
+class PackageSizeWorker(QThread):
+    """Fetches package archive sizes with HEAD requests, a few at a time."""
+
+    size_ready = pyqtSignal(int, int)  # list row, bytes (0 = unknown)
+
+    def __init__(self, to_measure, parent=None):
+        super().__init__(parent)
+        self.to_measure = to_measure  # list of (row, package)
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {
+                pool.submit(packages.get_size, pkg): row
+                for row, pkg in self.to_measure
+            }
+            for future in as_completed(futures):
+                if self._cancelled:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    return
+                self.size_ready.emit(futures[future], future.result())
+
+
+class PackageInstallWorker(QThread):
+    """Downloads and installs a list of Argos packages."""
+
+    package_started = pyqtSignal(int, int, str)  # index, total, "English → Spanish"
+    progress = pyqtSignal(int, int)  # done MB, total MB of the current package
+    package_failed = pyqtSignal(str, str)  # description, error
+    install_finished = pyqtSignal(int)  # packages installed
+
+    def __init__(self, to_install, parent=None):
+        super().__init__(parent)
+        self.to_install = to_install
+        self._cancelled = False
+        self._last_mb = -1
+
+    def cancel(self):
+        self._cancelled = True
+
+    def was_cancelled(self):
+        return self._cancelled
+
+    def _report(self, done, total):
+        mb = done >> 20
+        if mb != self._last_mb:
+            self._last_mb = mb
+            self.progress.emit(mb, max(1, total >> 20))
+
+    def run(self):
+        installed = 0
+        for i, pkg in enumerate(self.to_install):
+            if self._cancelled:
+                break
+            self._last_mb = -1
+            self.package_started.emit(
+                i, len(self.to_install), f"{pkg.from_name} → {pkg.to_name}"
+            )
+            try:
+                packages.install(
+                    pkg, on_progress=self._report, is_cancelled=self.was_cancelled
+                )
+            except CancelledError:
+                break
+            except Exception as exc:  # noqa: BLE001
+                self.package_failed.emit(f"{pkg.from_name} → {pkg.to_name}", str(exc))
+            else:
+                installed += 1
+        self.install_finished.emit(installed)
 
 
 class TranslateWorker(QThread):

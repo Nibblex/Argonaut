@@ -11,10 +11,10 @@ Minimalist document translator with a Qt (PyQt5) interface that uses
 [argos-translate-files](https://github.com/LibreTranslate/argos-translate-files)
 as an offline translation engine.
 
-Two engines are available from the *Engine* menu:
+Two engines are available from *Settings → Engine*:
 
-- **Argos Translate** (default) — light per-pair models installed with
-  `argospm`.
+- **Argos Translate** (default) — light per-pair models, installed and
+  removed from *Settings → Manage language packages…*.
 - **NLLB-200** — Meta's
   [nllb-200-distilled-600M](https://huggingface.co/facebook/nllb-200-distilled-600M)
   (int8, CTranslate2), noticeably better quality and direct translation
@@ -28,12 +28,12 @@ Two engines are available from the *Engine* menu:
 pip install PyQt5 argos-translate-lt argos-translate-files langdetect psutil
 ```
 
-You need at least one language package installed, for example:
-
-```bash
-argospm update
-argospm install translate-en_es
-```
+You need at least one language package installed. Open
+*Settings → Manage language packages…*, pick the pairs you want and
+press "Install selected"; the dialog lists every package from the Argos
+index with its size and lets you remove the installed ones. They can
+also be installed from the command line with `argospm install
+translate-en_es`.
 
 ## Usage
 
@@ -64,6 +64,8 @@ All modules live in the `src/argonaut/` package:
   progress/cache wrapper.
 - `nllb.py` — optional NLLB-200 backend (CTranslate2 + SentencePiece)
   exposing the same duck-typed API as argostranslate.
+- `packages.py` — Argos package index, download, installation and removal.
+- `package_dialog.py` — dialog to browse, install and remove packages.
 - `i18n.py` — interface languages (English by default, Spanish, French,
   German, Italian and Portuguese).
 
@@ -87,13 +89,16 @@ When the window closes, QSettings stores — besides the interface
 language — the source and target languages, the output folder and the
 window size/position; everything is restored on the next launch. If a
 saved language is no longer installed or the folder no longer exists,
-the default value is used.
+the default value is used. The active engine and the number of CPU
+threads (*Settings → CPU threads*, capped at the detected core count and
+defaulting to four) are saved as soon as they change.
 
 1. Choose the source and target languages (⇄ button to swap them).
    By default the source is "Detect language": each document's language
    is detected automatically, so you can mix files in different
    languages in the same batch.
-2. Drag documents onto the window or add them with "Add…".
+2. Drag documents or whole folders onto the window (dropped folders are
+   walked recursively) or add them with "Add…".
 3. Optionally pick a folder with "Output…" where all translations are
    saved (× returns to the default behaviour: next to each original).
 4. Press "Translate". Each translated file is saved with the target
@@ -103,7 +108,8 @@ the default value is used.
 
 Note about PDFs: they are translated paragraph by paragraph while
 preserving the layout, so a long document can take a while on CPU.
-The bar shows the real percentage of translated paragraphs. Rotated
+The bar shows the real percentage of translated paragraphs and an
+estimate of the remaining time. Rotated
 text (e.g. vertical watermarks) is kept untranslated, and links from
 the original document are not preserved in the translated copy.
 
