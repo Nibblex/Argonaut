@@ -3,4 +3,5 @@
 argos-translate-lt
 argos-translate-files>=1.4.4
 langdetect
+psutil
 pymupdf

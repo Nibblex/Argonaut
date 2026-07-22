@@ -2,7 +2,7 @@
     "name": "python3-package-installation",
     "buildsystem": "simple",
     "build-commands": [
-        "pip3 install --verbose --exists-action=i --no-index --find-links=\"file://${PWD}\" --prefix=${FLATPAK_DEST} --no-build-isolation PyYAML argos-translate-files argos-translate-lt beautifulsoup4 chardet click ctranslate2 filelock flatbuffers joblib langdetect lxml minisbd numpy onnxruntime packaging protobuf pymupdf pysrt regex sacremoses sentencepiece setuptools six soupsieve tqdm"
+        "pip3 install --verbose --exists-action=i --no-index --find-links=\"file://${PWD}\" --prefix=${FLATPAK_DEST} --no-build-isolation PyYAML argos-translate-files argos-translate-lt beautifulsoup4 chardet click ctranslate2 filelock flatbuffers joblib langdetect lxml minisbd numpy onnxruntime packaging protobuf psutil pymupdf pysrt regex sacremoses sentencepiece setuptools six soupsieve tqdm"
     ],
     "sources": [
         {
@@ -25,6 +25,22 @@
             "type": "file",
             "url": "https://files.pythonhosted.org/packages/1a/95/71515647ef4ada5499302adfb1689589ad3437253ccd62ac3b53edce314d/argos_translate_files-1.4.4-py3-none-any.whl",
             "sha256": "7737f5112a04f3b87fad3eed3f5fb3e862037950e66ae93302c036e5192beb5d"
+        },
+        {
+            "type": "file",
+            "url": "https://files.pythonhosted.org/packages/b5/70/5d8df3b09e25bce090399cf48e452d25c935ab72dad19406c77f4e828045/psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl",
+            "sha256": "076a2d2f923fd4821644f5ba89f059523da90dc9014e85f8e45a5774ca5bc6f9",
+            "only-arches": [
+                "x86_64"
+            ]
+        },
+        {
+            "type": "file",
+            "url": "https://files.pythonhosted.org/packages/63/65/37648c0c158dc222aba51c089eb3bdfa238e621674dc42d48706e639204f/psutil-7.2.2-cp36-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+            "sha256": "b0726cecd84f9474419d67252add4ac0cd9811b04d61123054b9fb6f57df6e9e",
+            "only-arches": [
+                "aarch64"
+            ]
         },
         {
             "type": "file",

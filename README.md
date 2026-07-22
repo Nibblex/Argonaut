@@ -11,10 +11,21 @@ Minimalist document translator with a Qt (PyQt5) interface that uses
 [argos-translate-files](https://github.com/LibreTranslate/argos-translate-files)
 as an offline translation engine.
 
+Two engines are available from the *Engine* menu:
+
+- **Argos Translate** (default) — light per-pair models installed with
+  `argospm`.
+- **NLLB-200** — Meta's
+  [nllb-200-distilled-600M](https://huggingface.co/facebook/nllb-200-distilled-600M)
+  (int8, CTranslate2), noticeably better quality and direct translation
+  between any pair of 32 languages. The model (~630 MB) is downloaded on
+  first use and stored under `~/.local/share/argonaut/`. Note that the
+  NLLB weights are licensed CC-BY-NC 4.0 (non-commercial).
+
 ## Requirements
 
 ```bash
-pip install PyQt5 argos-translate-lt argos-translate-files langdetect
+pip install PyQt5 argos-translate-lt argos-translate-files langdetect psutil
 ```
 
 You need at least one language package installed, for example:
@@ -51,6 +62,8 @@ All modules live in the `src/argonaut/` package:
 - `pdf.py` — fixed PDF translator (paragraphs, progress, cancellation).
 - `translation.py` — language detection, supported formats and the
   progress/cache wrapper.
+- `nllb.py` — optional NLLB-200 backend (CTranslate2 + SentencePiece)
+  exposing the same duck-typed API as argostranslate.
 - `i18n.py` — interface languages (English by default, Spanish, French,
   German, Italian and Portuguese).
 

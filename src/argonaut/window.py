@@ -2,7 +2,8 @@
 
 import os
 
-from PyQt5.QtCore import QSettings, QUrl, Qt
+import psutil
+from PyQt5.QtCore import QSettings, QTimer, QUrl, Qt
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QAction,
@@ -25,9 +26,10 @@ from PyQt5.QtWidgets import (
 
 import argostranslate.translate
 
+from argonaut import nllb
 from argonaut.i18n import LANGUAGES, current_language, set_language, tr
 from argonaut.translation import SUPPORTED_EXTS
-from argonaut.worker import TranslateWorker
+from argonaut.worker import ModelDownloadWorker, TranslateWorker
 
 
 class MainWindow(QMainWindow):
@@ -36,11 +38,15 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(520, 420)
         self.setAcceptDrops(True)
         self.worker = None
+        self.downloader = None
         self.results = []
         self.detected = {}
         self._status_base = ""
 
-        self.languages = argostranslate.translate.get_installed_languages()
+        self.backend = QSettings().value("backend", "argos")
+        if self.backend == "nllb" and not nllb.is_model_installed():
+            self.backend = "argos"  # the model was removed from disk
+        self.languages = self.load_languages()
 
         # --- interface language menu ---
         self.lang_menu = self.menuBar().addMenu("")
@@ -52,6 +58,28 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda _, c=code: self.change_language(c))
             group.addAction(action)
             self.lang_menu.addAction(action)
+
+        # --- engine menu ---
+        self.engine_menu = self.menuBar().addMenu("")
+        engine_group = QActionGroup(self)
+        engine_group.setExclusive(True)
+        self.argos_action = QAction("Argos Translate", self, checkable=True)
+        self.argos_action.triggered.connect(lambda: self.change_backend("argos"))
+        self.nllb_action = QAction("", self, checkable=True)
+        self.nllb_action.triggered.connect(lambda: self.change_backend("nllb"))
+        for action in (self.argos_action, self.nllb_action):
+            engine_group.addAction(action)
+            self.engine_menu.addAction(action)
+        (self.nllb_action if self.backend == "nllb" else self.argos_action).setChecked(True)
+        self.engine_menu.addSeparator()
+        self.nllb_remove_action = QAction("", self)
+        self.nllb_remove_action.triggered.connect(self.remove_nllb_model)
+        self.engine_menu.addAction(self.nllb_remove_action)
+        # kept accurate even if the model directory is deleted externally
+        self.engine_menu.aboutToShow.connect(
+            lambda: self.nllb_remove_action.setEnabled(nllb.is_model_installed())
+        )
+        self.nllb_remove_action.setEnabled(nllb.is_model_installed())
 
         # --- help menu ---
         self.help_menu = self.menuBar().addMenu("")
@@ -97,11 +125,14 @@ class MainWindow(QMainWindow):
         files_row = QHBoxLayout()
         self.add_btn = QPushButton()
         self.add_btn.clicked.connect(self.add_files)
+        self.open_file_btn = QPushButton()
+        self.open_file_btn.clicked.connect(self.open_selected)
         self.remove_btn = QPushButton()
         self.remove_btn.clicked.connect(self.remove_selected)
         self.clear_btn = QPushButton()
         self.clear_btn.clicked.connect(self.file_list.clear)
         files_row.addWidget(self.add_btn)
+        files_row.addWidget(self.open_file_btn)
         files_row.addWidget(self.remove_btn)
         files_row.addWidget(self.clear_btn)
         files_row.addStretch(1)
@@ -155,6 +186,21 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(central)
 
+        self.engine_label = QLabel()
+        self.engine_label.setStyleSheet("color: gray;")
+        self.statusBar().addPermanentWidget(self.engine_label)
+
+        # --- CPU/RAM usage of this process ---
+        self.process = psutil.Process()
+        self.process.cpu_percent()  # prime the counter; the first call is always 0
+        self.resource_label = QLabel()
+        self.resource_label.setStyleSheet("color: gray;")
+        self.statusBar().addPermanentWidget(self.resource_label)
+        self._resource_timer = QTimer(self)
+        self._resource_timer.timeout.connect(self.update_resource_usage)
+        self._resource_timer.start(2000)
+        self.update_resource_usage()
+
         if not self.languages:
             self.translate_btn.setEnabled(False)
 
@@ -169,15 +215,10 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geometry)
         src = settings.value("from_lang", "")
         if src:  # empty = "Detect language" (index 0, already selected)
-            for i in range(1, self.from_combo.count()):
-                if self.from_combo.itemData(i).code == src:
-                    self.from_combo.setCurrentIndex(i)
-                    break
+            self._select_language(self.from_combo, src, first=1)
         dst = settings.value("to_lang", "")
-        for i in range(self.to_combo.count()):
-            if self.to_combo.itemData(i).code == dst:
-                self.to_combo.setCurrentIndex(i)
-                break
+        if dst:
+            self._select_language(self.to_combo, dst, first=0)
         out = settings.value("output_dir", "")
         if out and os.path.isdir(out):
             self.output_dir = out
@@ -186,6 +227,9 @@ class MainWindow(QMainWindow):
             self.open_out_btn.setEnabled(True)
 
     def closeEvent(self, event):
+        if self.downloader is not None and self.downloader.isRunning():
+            self.downloader.cancel()
+            self.downloader.wait(2000)
         settings = QSettings()
         settings.setValue("geometry", self.saveGeometry())
         src = self.from_combo.currentData()
@@ -194,6 +238,118 @@ class MainWindow(QMainWindow):
         settings.setValue("to_lang", dst.code if dst else "")
         settings.setValue("output_dir", self.output_dir or "")
         super().closeEvent(event)
+
+    # --- translation engine ---
+    def load_languages(self):
+        if self.backend == "nllb":
+            return nllb.get_installed_languages()
+        return argostranslate.translate.get_installed_languages()
+
+    def change_backend(self, name):
+        if name == self.backend:
+            return
+        if name == "nllb" and not nllb.is_model_installed():
+            answer = QMessageBox.question(
+                self,
+                tr("nllb_download_title"),
+                tr("nllb_download_msg", size=nllb.MODEL_SIZE_MB),
+            )
+            if answer != QMessageBox.Yes:
+                self.argos_action.setChecked(True)
+                return
+            self.start_model_download()
+            return
+        self.apply_backend(name)
+
+    def apply_backend(self, name):
+        self.backend = name
+        QSettings().setValue("backend", name)
+        self.languages = self.load_languages()
+        self.reload_language_combos()
+        self.translate_btn.setEnabled(bool(self.languages))
+        (self.nllb_action if name == "nllb" else self.argos_action).setChecked(True)
+        self.nllb_remove_action.setEnabled(nllb.is_model_installed())
+        self.update_engine_label()
+        self.status.setText(tr("ready") if self.languages else tr("no_packages"))
+        self.clear_status_btn.setVisible(False)
+
+    def update_resource_usage(self):
+        # normalized to total capacity so it reads like a system monitor
+        # (100% = all cores busy) even when the engine uses every core
+        cpu = self.process.cpu_percent() / (psutil.cpu_count() or 1)
+        ram = self.process.memory_info().rss >> 20
+        self.resource_label.setText(f"CPU {cpu:.0f}%  ·  RAM {ram} MB")
+
+    def update_engine_label(self):
+        name = "NLLB-200" if self.backend == "nllb" else "Argos Translate"
+        self.engine_label.setText(tr("engine_status", name=name))
+
+    def remove_nllb_model(self):
+        answer = QMessageBox.question(
+            self,
+            tr("nllb_download_title"),
+            tr("nllb_remove_msg", size=nllb.MODEL_SIZE_MB),
+        )
+        if answer != QMessageBox.Yes:
+            return
+        if self.backend == "nllb":
+            self.apply_backend("argos")
+        nllb.remove_model()
+        self.nllb_remove_action.setEnabled(False)
+        self.status.setText(tr("nllb_removed"))
+
+    def reload_language_combos(self):
+        """Repopulates both combos with the current backend's languages,
+        keeping the selection when the language exists in both."""
+        src = self.from_combo.currentData()
+        dst = self.to_combo.currentData()
+        self.from_combo.clear()
+        self.to_combo.clear()
+        self.from_combo.addItem(tr("detect_language"), None)
+        for lang in self.languages:
+            self.from_combo.addItem(str(lang), lang)
+            self.to_combo.addItem(str(lang), lang)
+        self.select_defaults()
+        if src is not None:
+            self._select_language(self.from_combo, src.code, first=1)
+        if dst is not None:
+            self._select_language(self.to_combo, dst.code, first=0)
+
+    @staticmethod
+    def _select_language(combo, code, first):
+        for i in range(first, combo.count()):
+            if combo.itemData(i).code == code:
+                combo.setCurrentIndex(i)
+                return
+
+    def start_model_download(self):
+        self.downloader = ModelDownloadWorker(parent=self)
+        self.downloader.progress.connect(self.on_download_progress)
+        self.downloader.download_finished.connect(self.on_download_finished)
+        self.set_busy(True)
+        self.progress.setRange(0, 0)
+        self.status.setText(tr("downloading_model"))
+        self.downloader.start()
+
+    def on_download_progress(self, done, total):
+        self.progress.setRange(0, total)
+        self.progress.setValue(done)
+        self.progress.setFormat(f"%p% — {done}/{total} MB")
+
+    def on_download_finished(self, ok, error):
+        self.set_busy(False)
+        self.translate_btn.setEnabled(bool(self.languages))
+        if ok:
+            self.apply_backend("nllb")
+        else:
+            self.argos_action.setChecked(True)
+            self.status.setText(tr("cancelled") if not error else tr("ready"))
+            if error:
+                QMessageBox.warning(
+                    self,
+                    tr("nllb_download_title"),
+                    tr("download_failed", error=error),
+                )
 
     # --- interface language ---
     def change_language(self, code):
@@ -204,12 +360,18 @@ class MainWindow(QMainWindow):
         """Applies the current language to all static texts."""
         self.setWindowTitle(tr("app_title"))
         self.lang_menu.setTitle(tr("menu_language"))
+        self.engine_menu.setTitle(tr("menu_engine"))
+        self.nllb_action.setText(tr("engine_nllb"))
+        self.nllb_remove_action.setText(tr("nllb_remove"))
+        self.update_engine_label()
         self.help_menu.setTitle(tr("menu_help"))
         self.about_action.setText(tr("about"))
         self.from_combo.setItemText(0, tr("detect_language"))
         self.swap_btn.setToolTip(tr("swap_tooltip"))
         self.hint.setText(tr("hint", formats=" ".join(SUPPORTED_EXTS)))
         self.add_btn.setText(tr("add"))
+        self.open_file_btn.setText(tr("open"))
+        self.open_file_btn.setToolTip(tr("open_tooltip"))
         self.remove_btn.setText(tr("remove"))
         self.clear_btn.setText(tr("clear"))
         self.out_btn.setText(tr("output"))
@@ -275,6 +437,11 @@ class MainWindow(QMainWindow):
             if ext in SUPPORTED_EXTS and path not in existing:
                 existing.add(path)
                 self.file_list.addItem(path)
+
+    def open_selected(self):
+        for item in self.file_list.selectedItems():
+            if os.path.exists(item.text()):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(item.text()))
 
     def remove_selected(self):
         for item in self.file_list.selectedItems():
@@ -366,7 +533,11 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(busy)
 
     def cancel_translation(self):
-        if self.worker is not None:
+        if self.downloader is not None and self.downloader.isRunning():
+            self.downloader.cancel()
+            self.cancel_btn.setEnabled(False)
+            self.status.setText(tr("cancelling"))
+        elif self.worker is not None:
             self.worker.cancel()
             self.cancel_btn.setEnabled(False)
             self.status.setText(tr("cancelling"))
@@ -392,11 +563,16 @@ class MainWindow(QMainWindow):
         else:
             self.progress.setRange(0, 0)
 
-    def on_file_done(self, index, out_path):
-        text = out_path
+    def on_file_done(self, index, out_path, seconds):
+        text = f"{out_path}  ({self.format_duration(seconds)})"
         if index in self.detected:
             text += f"  ({tr('detected', name=self.detected[index])})"
         self.results.append(("ok", text))
+
+    @staticmethod
+    def format_duration(seconds):
+        minutes, secs = divmod(int(seconds), 60)
+        return f"{minutes:02d}:{secs:02d}"
 
     def on_file_failed(self, index, error):
         self.results.append(("error", error))

@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
@@ -55,6 +57,33 @@ def test_remove_selected(window):
     window.remove_selected()
     items = [window.file_list.item(i).text() for i in range(window.file_list.count())]
     assert items == ["/a/two.txt"]
+
+
+def test_open_selected_files(window, monkeypatch, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("hello")
+    other = tmp_path / "other.txt"
+    other.write_text("bye")
+    window.add_paths([str(doc), str(other), "/missing/gone.txt"])
+
+    opened = []
+    monkeypatch.setattr(
+        argonaut.window.QDesktopServices,
+        "openUrl",
+        staticmethod(lambda url: opened.append(url.toLocalFile())),
+    )
+
+    window.open_file_btn.click()  # nothing selected: nothing opens
+    assert opened == []
+
+    window.file_list.item(0).setSelected(True)
+    window.file_list.item(2).setSelected(True)  # missing file: skipped
+    window.open_file_btn.click()
+    assert opened == [str(doc)]
+
+    window.change_language("es")
+    assert window.open_file_btn.text() == "Abrir"
+    window.change_language("en")
 
 
 def test_swap_languages(window):
@@ -176,6 +205,181 @@ def test_full_translation_through_the_window(window, qtbot, tmp_path):
     assert out.exists()
     assert "HELLO WORLD" in out.read_text()
     assert str(out) in window.status.text()
+    assert re.search(r"\(\d{2}:\d{2}\)", window.status.text())
+
+
+def test_format_duration():
+    assert MainWindow.format_duration(0) == "00:00"
+    assert MainWindow.format_duration(65.7) == "01:05"
+    assert MainWindow.format_duration(3671) == "61:11"
+
+
+def test_backend_switch_and_persistence(qtbot, langs, monkeypatch):
+    fake_langs = [
+        FakeLanguage("en", "English"),
+        FakeLanguage("es", "Spanish"),
+        FakeLanguage("ja", "Japanese"),
+    ]
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: True
+    )
+    monkeypatch.setattr(
+        argonaut.window.nllb, "get_installed_languages", lambda path=None: fake_langs
+    )
+
+    win = MainWindow()
+    qtbot.addWidget(win)
+    assert win.backend == "argos"
+    assert win.argos_action.isChecked()
+
+    win.change_backend("nllb")
+    assert win.backend == "nllb"
+    assert win.nllb_action.isChecked()
+    assert win.from_combo.count() == 4  # detect + 3 languages
+    assert win.to_combo.currentText() == "Spanish"
+    win.close()
+
+    win2 = MainWindow()
+    qtbot.addWidget(win2)
+    assert win2.backend == "nllb"
+    assert win2.nllb_action.isChecked()
+    assert win2.from_combo.count() == 4
+
+
+def test_backend_switch_keeps_language_selection(window, monkeypatch):
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: True
+    )
+    monkeypatch.setattr(
+        argonaut.window.nllb,
+        "get_installed_languages",
+        lambda path=None: [FakeLanguage("en", "English"), FakeLanguage("es", "Spanish")],
+    )
+    window.from_combo.setCurrentIndex(1)  # English
+    window.to_combo.setCurrentIndex(1)  # Spanish
+    window.change_backend("nllb")
+    assert window.from_combo.currentText() == "English"
+    assert window.to_combo.currentText() == "Spanish"
+
+
+def test_backend_falls_back_to_argos_without_model(qtbot, langs, monkeypatch):
+    from PyQt5.QtCore import QSettings
+
+    QSettings().setValue("backend", "nllb")
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: False
+    )
+    win = MainWindow()
+    qtbot.addWidget(win)
+    assert win.backend == "argos"
+
+
+def test_backend_download_declined_keeps_argos(window, monkeypatch):
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: False
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No)
+    )
+    window.change_backend("nllb")
+    assert window.backend == "argos"
+    assert window.argos_action.isChecked()
+
+
+def test_backend_download_flow(window, monkeypatch, qtbot):
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: False
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
+    )
+
+    def fake_download(path=None, base_url=None, on_progress=None, is_cancelled=None):
+        on_progress(2 * 2**20, 4 * 2**20)
+
+    monkeypatch.setattr(argonaut.window.nllb, "download_model", fake_download)
+    monkeypatch.setattr(
+        argonaut.window.nllb,
+        "get_installed_languages",
+        lambda path=None: [FakeLanguage("en", "English"), FakeLanguage("es", "Spanish")],
+    )
+
+    window.change_backend("nllb")
+    qtbot.waitUntil(lambda: window.backend == "nllb", timeout=5000)
+    qtbot.waitUntil(lambda: window.translate_btn.isEnabled(), timeout=5000)
+    assert window.nllb_action.isChecked()
+    assert window.to_combo.currentText() == "Spanish"
+
+
+def test_engine_label_shows_active_backend(window, monkeypatch):
+    assert window.engine_label.text() == tr("engine_status", name="Argos Translate")
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: True
+    )
+    monkeypatch.setattr(
+        argonaut.window.nllb,
+        "get_installed_languages",
+        lambda path=None: [FakeLanguage("en", "English"), FakeLanguage("es", "Spanish")],
+    )
+    window.change_backend("nllb")
+    assert window.engine_label.text() == tr("engine_status", name="NLLB-200")
+    window.change_language("es")
+    assert window.engine_label.text() == "Motor: NLLB-200"
+    window.change_language("en")
+
+
+def test_remove_nllb_model(window, monkeypatch):
+    installed = [True]
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: installed[0]
+    )
+    monkeypatch.setattr(
+        argonaut.window.nllb,
+        "get_installed_languages",
+        lambda path=None: [FakeLanguage("en", "English"), FakeLanguage("es", "Spanish")],
+    )
+    removed = []
+
+    def fake_remove(path=None):
+        installed[0] = False
+        removed.append(True)
+
+    monkeypatch.setattr(argonaut.window.nllb, "remove_model", fake_remove)
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
+    )
+
+    window.change_backend("nllb")
+    assert window.nllb_remove_action.isEnabled()
+
+    window.remove_nllb_model()
+    assert removed == [True]
+    assert window.backend == "argos"  # falls back before deleting
+    assert window.argos_action.isChecked()
+    assert not window.nllb_remove_action.isEnabled()
+    assert window.status.text() == tr("nllb_removed")
+
+
+def test_remove_nllb_model_declined(window, monkeypatch):
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No)
+    )
+    removed = []
+    monkeypatch.setattr(
+        argonaut.window.nllb, "remove_model", lambda path=None: removed.append(True)
+    )
+    window.remove_nllb_model()
+    assert removed == []
+
+
+def test_resource_indicator(window):
+    assert re.fullmatch(r"CPU \d+%  ·  RAM \d+ MB", window.resource_label.text())
+    ram_before = int(re.search(r"RAM (\d+)", window.resource_label.text()).group(1))
+    assert ram_before > 0
+    window.update_resource_usage()
+    assert re.fullmatch(r"CPU \d+%  ·  RAM \d+ MB", window.resource_label.text())
+    assert window._resource_timer.isActive()
+    assert window._resource_timer.interval() == 2000
 
 
 def test_settings_persist_between_windows(qtbot, langs):

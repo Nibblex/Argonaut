@@ -60,9 +60,9 @@ def test_run_translates_files(qapp, tmp_path):
     english, spanish = make_langs()
     doc = tmp_path / "doc.txt"
     doc.write_text("hello world")
-    done, failed, finished = [], [], []
+    done, times, failed, finished = [], [], [], []
     worker = make_worker([str(doc)], english, spanish)
-    worker.file_done.connect(lambda i, out: done.append(out))
+    worker.file_done.connect(lambda i, out, secs: (done.append(out), times.append(secs)))
     worker.file_failed.connect(lambda i, err: failed.append(err))
     worker.finished_all.connect(lambda: finished.append(True))
     worker.run()
@@ -72,6 +72,7 @@ def test_run_translates_files(qapp, tmp_path):
     out = tmp_path / "doc_es.txt"
     assert done == [str(out)]
     assert "HELLO WORLD" in out.read_text()
+    assert len(times) == 1 and times[0] >= 0
 
 
 def test_run_reports_failures_and_continues(qapp, tmp_path):
@@ -81,7 +82,7 @@ def test_run_reports_failures_and_continues(qapp, tmp_path):
     missing = tmp_path / "missing.txt"
     done, failed = [], []
     worker = make_worker([str(missing), str(good)], english, spanish)
-    worker.file_done.connect(lambda i, out: done.append(out))
+    worker.file_done.connect(lambda i, out, secs: done.append(out))
     worker.file_failed.connect(lambda i, err: failed.append(err))
     worker.run()
 
@@ -95,7 +96,7 @@ def test_cancelled_run_stops_before_translating(qapp, tmp_path):
     doc.write_text("hello world")
     done, finished = [], []
     worker = make_worker([str(doc)], english, spanish)
-    worker.file_done.connect(lambda i, out: done.append(out))
+    worker.file_done.connect(lambda i, out, secs: done.append(out))
     worker.finished_all.connect(lambda: finished.append(True))
     worker.cancel()
     worker.run()

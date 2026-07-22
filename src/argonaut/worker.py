@@ -6,9 +6,45 @@ import time
 from PyQt5.QtCore import QThread, pyqtSignal
 from argostranslatefiles import argostranslatefiles
 
+from argonaut import nllb
 from argonaut.i18n import tr
 from argonaut.pdf import FastPdfTranslator, count_pdf_paragraphs
 from argonaut.translation import CancelledError, ProgressTranslation, detect_language
+
+
+class ModelDownloadWorker(QThread):
+    """Downloads the NLLB model without blocking the UI."""
+
+    progress = pyqtSignal(int, int)  # done MB, total MB
+    download_finished = pyqtSignal(bool, str)  # ok, error ("" when cancelled)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        last = -1
+
+        def report(done, total):
+            nonlocal last
+            mb = done >> 20
+            if mb != last:
+                last = mb
+                self.progress.emit(mb, max(1, total >> 20))
+
+        try:
+            nllb.download_model(
+                on_progress=report, is_cancelled=lambda: self._cancelled
+            )
+        except CancelledError:
+            self.download_finished.emit(False, "")
+        except Exception as exc:  # noqa: BLE001
+            self.download_finished.emit(False, str(exc))
+        else:
+            self.download_finished.emit(True, "")
 
 
 class TranslateWorker(QThread):
@@ -16,7 +52,7 @@ class TranslateWorker(QThread):
     file's language separately."""
 
     file_started = pyqtSignal(int, str)
-    file_done = pyqtSignal(int, str)
+    file_done = pyqtSignal(int, str, float)  # index, output path, seconds
     file_failed = pyqtSignal(int, str)
     progress_update = pyqtSignal(int, int)  # chunks done, total (0 = unknown)
     phase_changed = pyqtSignal(str)  # description of the current phase
@@ -71,6 +107,7 @@ class TranslateWorker(QThread):
                 break
             self.file_started.emit(i, path)
             self._current_name = os.path.basename(path)
+            file_start = time.monotonic()
             try:
                 translation = self.resolve_translation(i, path)
                 is_pdf = path.lower().endswith(".pdf")
@@ -95,7 +132,7 @@ class TranslateWorker(QThread):
                     out = argostranslatefiles.translate_file(
                         proxy, path, get_output_path=self.get_output_path
                     )
-                self.file_done.emit(i, out or "")
+                self.file_done.emit(i, out or "", time.monotonic() - file_start)
             except CancelledError:
                 break
             except Exception as exc:  # noqa: BLE001
