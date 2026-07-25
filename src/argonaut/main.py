@@ -20,6 +20,7 @@ warnings.filterwarnings("ignore", message=".*doesn't match a supported version.*
 # level to WARNING every time it creates its pipeline, but filters persist
 logging.getLogger("stanza").addFilter(lambda r: r.levelno >= logging.ERROR)
 
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QApplication
 
 from argonaut import __version__
@@ -33,6 +34,13 @@ def main():
     app.setOrganizationName("Argonaut")
     app.setApplicationName("Argonaut")
     app.setApplicationVersion(__version__)
+    # the Wayland app_id must match the installed .desktop file so the
+    # compositor can resolve the window icon; without it Wayland shows its
+    # generic fallback icon
+    app.setDesktopFileName("io.github.nibblex.Argonaut")
+    # Wayland ignores window icons and relies on the app_id above; this covers
+    # the fallback-x11 path, where the icon is taken from the window instead
+    app.setWindowIcon(QIcon.fromTheme("io.github.nibblex.Argonaut"))
     load_language()
     window = MainWindow()
     window.show()

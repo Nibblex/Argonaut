@@ -87,6 +87,28 @@ def test_run_translates_files(qapp, tmp_path):
     assert len(times) == 1 and times[0] >= 0
 
 
+def test_batch_shares_the_translation_cache_across_files(qapp, tmp_path):
+    # two files with the same content translate their shared paragraph once
+    english, spanish = make_langs()
+    inner = english._translations["es"]
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / name).write_text("hello world")
+    worker = make_worker(
+        [str(tmp_path / "a.txt"), str(tmp_path / "b.txt")], english, spanish
+    )
+    done, stats = [], []
+    worker.file_done.connect(lambda i, out, secs: done.append(out))
+    worker.file_cache_stats.connect(
+        lambda i, reused, total: stats.append((i, reused, total))
+    )
+    worker.run()
+
+    assert len(done) == 2
+    assert inner.calls == 1  # the second file reused the first's translation
+    # first file: nothing to reuse yet; second: its one segment came from cache
+    assert stats == [(0, 0, 0), (1, 1, 1)]
+
+
 def test_run_reports_failures_and_continues(qapp, tmp_path):
     english, spanish = make_langs()
     good = tmp_path / "good.txt"

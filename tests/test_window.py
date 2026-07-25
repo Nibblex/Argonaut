@@ -1,3 +1,4 @@
+import os
 import re
 
 import pytest
@@ -5,7 +6,16 @@ from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 import argonaut.window
 from argonaut.i18n import tr
-from argonaut.window import MainWindow
+from argonaut.window import (
+    FOLDER_COL,
+    HIDEABLE_COLS,
+    MODIFIED_COL,
+    NAME_COL,
+    SIZE_COL,
+    STATUS_COL,
+    TYPE_COL,
+    MainWindow,
+)
 from tests.conftest import FakeLanguage, FakeTranslation
 
 
@@ -63,7 +73,7 @@ def test_add_paths_filters_and_deduplicates(window):
 
 def test_remove_selected(window):
     window.add_paths(["/a/one.txt", "/a/two.txt"])
-    window.file_list.item(0).setSelected(True)
+    window.file_list.topLevelItem(0).setSelected(True)
     window.remove_selected()
     assert window.paths() == ["/a/two.txt"]
 
@@ -87,18 +97,252 @@ def test_file_list_shows_individual_and_total_sizes(window, tmp_path):
     big.write_bytes(b"x" * (2 * 2**20))  # 2 MB
     window.add_paths([str(small), str(big)])
 
-    assert window.file_list.item(0).text() == f"{small}  ·  1.0 KB"
-    assert window.file_list.item(1).text() == f"{big}  ·  2.0 MB"
+    # name (bare file name) and size live in independent columns
+    assert window.file_list.topLevelItem(0).text(NAME_COL) == "small.txt"
+    assert window.file_list.topLevelItem(0).text(SIZE_COL) == "1.0 KB"
+    assert window.file_list.topLevelItem(1).text(NAME_COL) == "big.txt"
+    assert window.file_list.topLevelItem(1).text(SIZE_COL) == "2.0 MB"
     # total sums both, in a translated summary line
     assert window.total_label.text() == tr(
         "batch_total", count=2, size=human_size(1024 + 2 * 2**20)
     )
 
-    window.file_list.item(0).setSelected(True)
+    window.file_list.topLevelItem(0).setSelected(True)
     window.remove_selected()
     assert window.total_label.text() == tr("batch_total", count=1, size="2.0 MB")
     window.clear_files()
     assert window.total_label.text() == ""  # cleared with the list
+
+
+def test_name_column_shows_bare_name_and_folder_holds_the_path(window):
+    window.add_paths(["/a/b/doc.txt"])
+    item = window.file_list.topLevelItem(0)
+    assert item.text(NAME_COL) == "doc.txt"
+    assert item.text(FOLDER_COL) == "/a/b"
+    # the full path is still available for opening/translating
+    assert window.paths() == ["/a/b/doc.txt"]
+
+
+def test_columns_can_be_hidden_and_the_choice_persists(window):
+    from PyQt5.QtCore import QSettings
+
+    # every column starts visible
+    assert not any(window.file_list.isColumnHidden(c) for c in HIDEABLE_COLS)
+
+    window.set_column_visible(FOLDER_COL, False)
+    window.set_column_visible(SIZE_COL, False)
+    assert window.file_list.isColumnHidden(FOLDER_COL)
+    assert window.file_list.isColumnHidden(SIZE_COL)
+    # the name column can never be hidden (not offered in the menu)
+    assert NAME_COL not in HIDEABLE_COLS
+    stored = set(QSettings().value("hidden_columns", "").split(","))
+    assert stored == {"col_folder", "col_size"}
+
+    # showing one again updates the stored set
+    window.set_column_visible(SIZE_COL, True)
+    assert not window.file_list.isColumnHidden(SIZE_COL)
+    assert QSettings().value("hidden_columns", "") == "col_folder"
+
+
+def test_hidden_columns_are_restored(qtbot, langs):
+    from PyQt5.QtCore import QSettings
+
+    QSettings().setValue("hidden_columns", "col_modified,col_status")
+    win = MainWindow()
+    qtbot.addWidget(win)
+    assert win.file_list.isColumnHidden(MODIFIED_COL)
+    assert win.file_list.isColumnHidden(STATUS_COL)
+    assert not win.file_list.isColumnHidden(TYPE_COL)
+
+
+def test_columns_menu_lists_only_hideable_columns(window):
+    from PyQt5.QtWidgets import QMenu
+
+    window.set_column_visible(TYPE_COL, False)
+    menus = []
+    # exec_ would block; capture the menu the handler builds instead
+    orig = QMenu.exec_
+    QMenu.exec_ = lambda self, *a, **k: menus.append(self)
+    try:
+        window.show_columns_menu(window.file_list.header().rect().topLeft())
+    finally:
+        QMenu.exec_ = orig
+
+    entries = {a.text(): a.isChecked() for a in menus[0].actions()}
+    assert set(entries) == {tr("col_type"), tr("col_size"), tr("col_modified"),
+                            tr("col_folder"), tr("col_status")}
+    assert entries[tr("col_type")] is False  # reflects the hidden state
+
+
+def test_header_click_sorts_by_name_and_size(window, tmp_path):
+    from PyQt5.QtCore import Qt
+
+    # three files whose alphabetical and size orders differ
+    sizes = {"beta.txt": 3000, "alpha.txt": 1000, "gamma.txt": 2000}
+    for name, size in sizes.items():
+        (tmp_path / name).write_bytes(b"x" * size)
+    window.add_paths([str(tmp_path / n) for n in sizes])
+
+    def names():
+        return [
+            os.path.basename(window.file_list.topLevelItem(i).text(NAME_COL))
+            for i in range(window.file_list.topLevelItemCount())
+        ]
+
+    # clicking a header sorts; sortByColumn is what the click triggers
+    window.file_list.sortByColumn(NAME_COL, Qt.AscendingOrder)
+    assert names() == ["alpha.txt", "beta.txt", "gamma.txt"]
+    window.file_list.sortByColumn(NAME_COL, Qt.DescendingOrder)
+    assert names() == ["gamma.txt", "beta.txt", "alpha.txt"]
+
+    # the size column sorts numerically, not by its "3.0 KB" text
+    window.file_list.sortByColumn(SIZE_COL, Qt.AscendingOrder)
+    assert names() == ["alpha.txt", "gamma.txt", "beta.txt"]
+    window.file_list.sortByColumn(SIZE_COL, Qt.DescendingOrder)
+    assert names() == ["beta.txt", "gamma.txt", "alpha.txt"]
+    # paths() follows the visible order after sorting
+    assert [os.path.basename(p) for p in window.paths()] == names()
+
+
+def test_metadata_columns_populate(window, tmp_path):
+    doc = tmp_path / "report.pdf"
+    doc.write_bytes(b"%PDF-1.4 fake")
+    window.add_paths([str(doc)])
+
+    item = window.file_list.topLevelItem(0)
+    assert item.text(TYPE_COL) == "PDF"
+    assert item.text(FOLDER_COL) == str(tmp_path)
+    assert item.text(MODIFIED_COL)  # a formatted date, non-empty
+    assert item.text(STATUS_COL) == ""  # blank until a translation runs
+
+
+def test_sort_by_modified_is_numeric(window, tmp_path):
+    import os as _os
+    from PyQt5.QtCore import Qt
+
+    older, newer = tmp_path / "older.txt", tmp_path / "newer.txt"
+    older.write_text("a")
+    newer.write_text("b")
+    # make the modification times unambiguous regardless of write order
+    _os.utime(older, (1000, 1000))
+    _os.utime(newer, (2000, 2000))
+    window.add_paths([str(newer), str(older)])
+
+    window.file_list.sortByColumn(MODIFIED_COL, Qt.AscendingOrder)
+    assert [_os.path.basename(p) for p in window.paths()] == ["older.txt", "newer.txt"]
+    window.file_list.sortByColumn(MODIFIED_COL, Qt.DescendingOrder)
+    assert [_os.path.basename(p) for p in window.paths()] == ["newer.txt", "older.txt"]
+
+
+def test_status_column_tracks_translation(window, qtbot, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("hello world")
+    window.add_paths([str(doc)])
+    window.from_combo.setCurrentIndex(1)  # English
+    window.to_combo.setCurrentIndex(1)  # Spanish
+
+    window.start_translation()
+    # every queued file starts as "pending"
+    assert window.file_list.topLevelItem(0).text(STATUS_COL) == tr("status_pending")
+    qtbot.waitUntil(lambda: not window.worker.isRunning(), timeout=5000)
+    qtbot.waitUntil(lambda: window.translate_btn.isEnabled(), timeout=5000)
+
+    assert window.file_list.topLevelItem(0).text(STATUS_COL) == tr("status_done")
+    # the outcome re-translates when the interface language changes
+    window.change_language("es")
+    assert window.file_list.topLevelItem(0).text(STATUS_COL) == "Hecho"
+
+
+def test_cache_reuse_is_shown_per_file_and_for_the_batch(window):
+    window.add_paths(["/a/one.txt", "/a/two.txt"])
+
+    class FakeWorker:
+        files = ["/a/one.txt", "/a/two.txt"]
+
+        def isRunning(self):
+            return False
+
+    window.worker = FakeWorker()
+    window._batch_reused = 0
+
+    # first file reused nothing; its tooltip stays blank, no batch note yet
+    window.on_file_cache_stats(0, 0, 0)
+    assert window._item_for_path("/a/one.txt").toolTip(STATUS_COL) == ""
+    assert window.total_label.toolTip() == ""
+
+    # second file reused 3 segments, lifting the batch total to 3
+    window.on_file_cache_stats(1, 3, 3)
+    two = window._item_for_path("/a/two.txt")
+    assert two.toolTip(STATUS_COL) == tr("cache_reused_file", count=3)
+    assert window.total_label.toolTip() == tr("cache_reused_batch", count=3)
+
+    # the tooltips follow an interface-language change
+    window.change_language("es")
+    assert two.toolTip(STATUS_COL) == "Reutilizados 3 segmentos de la caché"
+    assert window.total_label.toolTip() == (
+        "Caché: 3 segmentos reutilizados en el lote"
+    )
+    window.change_language("en")
+
+
+def test_cancelling_marks_unfinished_files_as_cancelled(window):
+    window.add_paths(["/a/one.txt", "/a/two.txt", "/a/three.txt"])
+    # mid-batch: one finished, one in progress, one still queued
+    window._set_file_state("/a/one.txt", "done")
+    window._set_file_state("/a/two.txt", "translating")
+    window._set_file_state("/a/three.txt", "pending")
+
+    class FakeWorker:
+        files = ["/a/one.txt", "/a/two.txt", "/a/three.txt"]
+
+        def was_cancelled(self):
+            return True
+
+    window.worker = FakeWorker()
+    window.results = []
+    window.on_finished()
+
+    def status(path):
+        return window._item_for_path(path).text(STATUS_COL)
+
+    assert status("/a/one.txt") == tr("status_done")  # a real outcome is kept
+    assert status("/a/two.txt") == tr("status_cancelled")  # was stuck translating
+    assert status("/a/three.txt") == tr("status_cancelled")  # never started
+
+
+def test_language_change_updates_the_live_status_mid_translation(window):
+    class FakeWorker:
+        files = ["/a/doc.txt"]
+
+        def isRunning(self):
+            return True
+
+    window.worker = FakeWorker()
+
+    window.on_file_started(0, "/a/doc.txt")
+    english = window.status.text()
+    assert english == tr("translating", name="doc.txt", index=1, total=1)
+
+    # switching language re-renders the message below the progress bar
+    window.change_language("es")
+    spanish = window.status.text()
+    assert spanish == tr("translating", name="doc.txt", index=1, total=1)
+    assert spanish != english  # it actually changed, not left stale
+
+    # the detected-language suffix is re-rendered too
+    window.on_language_detected(0, "English")
+    window.change_language("en")
+    assert window.status.text() == (
+        f'{tr("translating", name="doc.txt", index=1, total=1)} — '
+        f'{tr("detected", name="English")}'
+    )
+
+    # and so are the per-page phase messages
+    window.on_phase_changed("generating", {"name": "doc.txt", "done": 2, "total": 5})
+    window.change_language("es")
+    assert window.status.text() == tr(
+        "generating", name="doc.txt", done=2, total=5
+    )
 
 
 def test_expand_dirs_walks_folders_recursively(window, tmp_path):
@@ -135,8 +379,8 @@ def test_open_selected_files(window, monkeypatch, tmp_path):
     window.open_file_btn.click()  # nothing selected: nothing opens
     assert opened == []
 
-    window.file_list.item(0).setSelected(True)
-    window.file_list.item(2).setSelected(True)  # missing file: skipped
+    window.file_list.topLevelItem(0).setSelected(True)
+    window.file_list.topLevelItem(2).setSelected(True)  # missing file: skipped
     window.open_file_btn.click()
     assert opened == [str(doc)]
 
@@ -259,6 +503,7 @@ def test_skip_existing_setting_persists_and_reaches_the_worker(qtbot, langs, tmp
 
     assert out.read_text() == "already there"  # skipped, not overwritten
     assert tr("skipped_header") in win2.status.text()
+    assert win2.file_list.topLevelItem(0).text(STATUS_COL) == tr("status_skipped")
 
 
 def test_add_files_dialog(window, monkeypatch, tmp_path):

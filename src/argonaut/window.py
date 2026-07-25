@@ -2,6 +2,7 @@
 
 import os
 import time
+from datetime import datetime
 
 import psutil
 from PyQt5.QtCore import QSettings, QTimer, QUrl, Qt
@@ -14,15 +15,17 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QStyle,
     QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -36,8 +39,53 @@ from argonaut.package_dialog import PackageDialog
 from argonaut.translation import SUPPORTED_EXTS
 from argonaut.worker import ModelDownloadWorker, TranslateWorker
 
+NAME_COL = 0
+TYPE_COL = 1
+SIZE_COL = 2
+MODIFIED_COL = 3
+FOLDER_COL = 4
+STATUS_COL = 5
+# header text keys, one per column, in column order
+COLUMN_KEYS = (
+    "col_name", "col_type", "col_size", "col_modified", "col_folder", "col_status",
+)
+# columns the user can show/hide from the header's context menu (Name always shows)
+HIDEABLE_COLS = (TYPE_COL, SIZE_COL, MODIFIED_COL, FOLDER_COL, STATUS_COL)
+
 FILE_PATH_ROLE = Qt.UserRole
 FILE_SIZE_ROLE = Qt.UserRole + 1
+FILE_MTIME_ROLE = Qt.UserRole + 2
+FILE_STATE_ROLE = Qt.UserRole + 3
+FILE_REUSED_ROLE = Qt.UserRole + 4  # segments this file served from the cache
+
+# per-file translation states, in the order used to sort the Status column
+STATUS_STATES = ("pending", "translating", "done", "skipped", "failed", "cancelled")
+
+
+def _status_rank(item):
+    state = item.data(STATUS_COL, FILE_STATE_ROLE)
+    return STATUS_STATES.index(state) if state in STATUS_STATES else -1
+
+
+class FileItem(QTreeWidgetItem):
+    """A row in the file list. The size and modified columns sort by their
+    raw numeric value rather than their formatted text, and the status column
+    by its state's rank; the rest sort case-insensitively by their text."""
+
+    def __lt__(self, other):
+        tree = self.treeWidget()
+        column = tree.sortColumn() if tree else NAME_COL
+        if column == SIZE_COL:
+            return (self.data(SIZE_COL, FILE_SIZE_ROLE) or 0) < (
+                other.data(SIZE_COL, FILE_SIZE_ROLE) or 0
+            )
+        if column == MODIFIED_COL:
+            return (self.data(MODIFIED_COL, FILE_MTIME_ROLE) or 0) < (
+                other.data(MODIFIED_COL, FILE_MTIME_ROLE) or 0
+            )
+        if column == STATUS_COL:
+            return _status_rank(self) < _status_rank(other)
+        return self.text(column).lower() < other.text(column).lower()
 
 
 def human_size(num_bytes):
@@ -59,7 +107,9 @@ class MainWindow(QMainWindow):
         self.downloader = None
         self.results = []
         self.detected = {}
-        self._status_base = ""
+        # live status below the progress bar, as (translation key, kwargs)
+        # parts joined by " — ", so a language change can re-render it
+        self._status_parts = []
         self._eta_total = None
         self._eta_t0 = 0.0
         self._eta_done0 = 0
@@ -153,8 +203,27 @@ class MainWindow(QMainWindow):
         self.select_defaults()
 
         # --- file list ---
-        self.file_list = QListWidget()
-        self.file_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.file_list = QTreeWidget()
+        self.file_list.setColumnCount(len(COLUMN_KEYS))
+        self.file_list.setRootIsDecorated(False)  # flat list, no expand arrows
+        self.file_list.setUniformRowHeights(True)
+        self.file_list.setAllColumnsShowFocus(True)
+        self.file_list.setSelectionMode(QTreeWidget.ExtendedSelection)
+        # sortable headers; -1 keeps insertion order until a header is clicked
+        self.file_list.setSortingEnabled(True)
+        self.file_list.sortByColumn(-1, Qt.AscendingOrder)
+        header = self.file_list.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(NAME_COL, QHeaderView.Stretch)
+        header.setSectionResizeMode(TYPE_COL, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(SIZE_COL, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(MODIFIED_COL, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(FOLDER_COL, QHeaderView.Interactive)
+        header.setSectionResizeMode(STATUS_COL, QHeaderView.ResizeToContents)
+        header.resizeSection(FOLDER_COL, 160)
+        # right-click the header to choose which columns are shown
+        header.setContextMenuPolicy(Qt.CustomContextMenu)
+        header.customContextMenuRequested.connect(self.show_columns_menu)
         layout.addWidget(self.file_list, 1)
 
         self.total_label = QLabel()
@@ -279,6 +348,7 @@ class MainWindow(QMainWindow):
         self.skip_existing_cb.setChecked(
             settings.value("skip_existing", False, type=bool)
         )
+        self.restore_columns()
 
     def closeEvent(self, event):
         if self.downloader is not None and self.downloader.isRunning():
@@ -453,8 +523,16 @@ class MainWindow(QMainWindow):
         self.about_action.setText(tr("about"))
         self.from_combo.setItemText(0, tr("detect_language"))
         self.swap_btn.setToolTip(tr("swap_tooltip"))
+        self.file_list.setHeaderLabels([tr(key) for key in COLUMN_KEYS])
+        for i in range(self.file_list.topLevelItemCount()):
+            item = self.file_list.topLevelItem(i)
+            state = item.data(STATUS_COL, FILE_STATE_ROLE)
+            if state:
+                item.setText(STATUS_COL, tr(f"status_{state}"))
+            self._render_cache_tooltip(item)
         self.hint.setText(tr("hint", formats=" ".join(SUPPORTED_EXTS)))
         self.update_total_size()
+        self._render_batch_cache_tooltip()
         self.add_btn.setText(tr("add"))
         self.open_file_btn.setText(tr("open"))
         self.open_file_btn.setToolTip(tr("open_tooltip"))
@@ -472,10 +550,11 @@ class MainWindow(QMainWindow):
         self.clear_status_btn.setToolTip(tr("clear_status_tooltip"))
         self.translate_btn.setText(tr("translate"))
         self.cancel_btn.setText(tr("cancel"))
-        # don't clobber the status while a translation runs or a summary is shown
-        if (self.worker is None or not self.worker.isRunning()) and (
-            not self.clear_status_btn.isVisible()
-        ):
+        if self.worker is not None and self.worker.isRunning():
+            # re-render the live progress message in the new language
+            self.refresh_status()
+        elif not self.clear_status_btn.isVisible():
+            # don't clobber a finished translation's summary
             self.status.setText(
                 tr("ready") if self.languages else tr("no_packages")
             )
@@ -518,8 +597,8 @@ class MainWindow(QMainWindow):
 
     def paths(self):
         return [
-            self.file_list.item(i).data(FILE_PATH_ROLE)
-            for i in range(self.file_list.count())
+            self.file_list.topLevelItem(i).data(NAME_COL, FILE_PATH_ROLE)
+            for i in range(self.file_list.topLevelItemCount())
         ]
 
     def add_paths(self, paths):
@@ -533,21 +612,77 @@ class MainWindow(QMainWindow):
 
     def add_file_item(self, path):
         try:
-            size = os.path.getsize(path)
+            stat = os.stat(path)
+            size, mtime = stat.st_size, stat.st_mtime
         except OSError:
-            size = 0
-        item = QListWidgetItem(f"{path}  ·  {human_size(size)}")
-        item.setData(FILE_PATH_ROLE, path)
-        item.setData(FILE_SIZE_ROLE, size)
-        self.file_list.addItem(item)
+            size, mtime = 0, 0.0
+        item = FileItem()
+        # the name column shows the file name; the folder column holds its path
+        item.setText(NAME_COL, os.path.basename(path))
+        item.setData(NAME_COL, FILE_PATH_ROLE, path)
+        item.setText(TYPE_COL, os.path.splitext(path)[1].lstrip(".").upper())
+        item.setText(SIZE_COL, human_size(size))
+        item.setData(SIZE_COL, FILE_SIZE_ROLE, size)
+        item.setTextAlignment(SIZE_COL, Qt.AlignRight | Qt.AlignVCenter)
+        item.setText(MODIFIED_COL, self._format_mtime(mtime))
+        item.setData(MODIFIED_COL, FILE_MTIME_ROLE, mtime)
+        item.setText(FOLDER_COL, os.path.dirname(path))
+        self.file_list.addTopLevelItem(item)
+
+    @staticmethod
+    def _format_mtime(mtime):
+        if not mtime:
+            return ""
+        return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+
+    def _item_for_path(self, path):
+        for i in range(self.file_list.topLevelItemCount()):
+            item = self.file_list.topLevelItem(i)
+            if item.data(NAME_COL, FILE_PATH_ROLE) == path:
+                return item
+        return None
+
+    def _set_file_state(self, path, state):
+        """Sets the Status column of the row for `path` (no-op if it was
+        removed meanwhile). The state key is stored so the column keeps
+        sorting by rank and re-translates on a language change."""
+        item = self._item_for_path(path)
+        if item is not None:
+            item.setData(STATUS_COL, FILE_STATE_ROLE, state)
+            item.setText(STATUS_COL, tr(f"status_{state}"))
+
+    # --- column visibility ---
+    def show_columns_menu(self, pos):
+        """Header context menu with a checkable entry per hideable column."""
+        menu = QMenu(self)
+        for col in HIDEABLE_COLS:
+            action = QAction(tr(COLUMN_KEYS[col]), self, checkable=True)
+            action.setChecked(not self.file_list.isColumnHidden(col))
+            action.toggled.connect(lambda shown, c=col: self.set_column_visible(c, shown))
+            menu.addAction(action)
+        menu.exec_(self.file_list.header().mapToGlobal(pos))
+
+    def set_column_visible(self, col, visible):
+        self.file_list.setColumnHidden(col, not visible)
+        hidden = [
+            COLUMN_KEYS[c] for c in HIDEABLE_COLS if self.file_list.isColumnHidden(c)
+        ]
+        QSettings().setValue("hidden_columns", ",".join(hidden))
+
+    def restore_columns(self):
+        saved = QSettings().value("hidden_columns", "")
+        hidden = set(saved.split(",")) if saved else set()
+        for col in HIDEABLE_COLS:
+            self.file_list.setColumnHidden(col, COLUMN_KEYS[col] in hidden)
 
     def update_total_size(self):
-        count = self.file_list.count()
+        count = self.file_list.topLevelItemCount()
         if not count:
             self.total_label.clear()
             return
         total = sum(
-            self.file_list.item(i).data(FILE_SIZE_ROLE) or 0 for i in range(count)
+            self.file_list.topLevelItem(i).data(SIZE_COL, FILE_SIZE_ROLE) or 0
+            for i in range(count)
         )
         self.total_label.setText(
             tr("batch_total", count=count, size=human_size(total))
@@ -559,13 +694,13 @@ class MainWindow(QMainWindow):
 
     def open_selected(self):
         for item in self.file_list.selectedItems():
-            path = item.data(FILE_PATH_ROLE)
+            path = item.data(NAME_COL, FILE_PATH_ROLE)
             if os.path.exists(path):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def remove_selected(self):
         for item in self.file_list.selectedItems():
-            self.file_list.takeItem(self.file_list.row(item))
+            self.file_list.takeTopLevelItem(self.file_list.indexOfTopLevelItem(item))
         self.update_total_size()
 
     def dragEnterEvent(self, event):
@@ -642,6 +777,14 @@ class MainWindow(QMainWindow):
 
         self.results = []
         self.detected = {}  # file index -> detected language
+        self._batch_reused = 0
+        for path in files:
+            self._set_file_state(path, "pending")
+            item = self._item_for_path(path)
+            if item is not None:
+                item.setData(STATUS_COL, FILE_REUSED_ROLE, 0)
+                self._render_cache_tooltip(item)
+        self._render_batch_cache_tooltip()
         self.set_busy(True)
         self.progress.setRange(0, 0)  # indeterminate until the first update
         self.progress.setFormat("%p%")
@@ -652,17 +795,20 @@ class MainWindow(QMainWindow):
             skip_existing=self.skip_existing_cb.isChecked(),
             parent=self,
         )
+        self._status_parts = []
         self.worker.file_started.connect(self.on_file_started)
         self.worker.progress_update.connect(self.on_progress)
-        self.worker.phase_changed.connect(self.status.setText)
+        self.worker.phase_changed.connect(self.on_phase_changed)
         self.worker.language_detected.connect(self.on_language_detected)
         self.worker.file_done.connect(self.on_file_done)
         self.worker.file_failed.connect(self.on_file_failed)
         self.worker.file_skipped.connect(self.on_file_skipped)
+        self.worker.file_cache_stats.connect(self.on_file_cache_stats)
         self.worker.finished_all.connect(self.on_finished)
         self.worker.start()
 
     def clear_status(self):
+        self._status_parts = []
         self.status.setText(tr("ready"))
         self.clear_status_btn.setVisible(False)
 
@@ -682,21 +828,37 @@ class MainWindow(QMainWindow):
         elif self.worker is not None:
             self.worker.cancel()
             self.cancel_btn.setEnabled(False)
-            self.status.setText(tr("cancelling"))
+            self._status_parts = [("cancelling", {})]
+            self.refresh_status()
 
     def on_file_started(self, index, path):
         self.reset_eta()
-        self._status_base = tr(
-            "translating",
-            name=os.path.basename(path),
-            index=index + 1,
-            total=len(self.worker.files),
-        )
-        self.status.setText(self._status_base)
+        self._set_file_state(path, "translating")
+        self._status_parts = [
+            ("translating", {
+                "name": os.path.basename(path),
+                "index": index + 1,
+                "total": len(self.worker.files),
+            })
+        ]
+        self.refresh_status()
 
     def on_language_detected(self, index, name):
         self.detected[index] = name
-        self.status.setText(f"{self._status_base} — {tr('detected', name=name)}")
+        self._status_parts.append(("detected", {"name": name}))
+        self.refresh_status()
+
+    def on_phase_changed(self, key, kwargs):
+        # a phase (generating a page, saving) replaces the "translating" base
+        self._status_parts = [(key, kwargs)]
+        self.refresh_status()
+
+    def refresh_status(self):
+        """Renders the live translation status in the current language."""
+        if self._status_parts:
+            self.status.setText(
+                " — ".join(tr(key, **kwargs) for key, kwargs in self._status_parts)
+            )
 
     def on_progress(self, done, total):
         if total > 0:
@@ -732,6 +894,7 @@ class MainWindow(QMainWindow):
         return (total - done) * elapsed / progressed
 
     def on_file_done(self, index, out_path, seconds):
+        self._set_file_state(self.worker.files[index], "done")
         text = f"{out_path}  ({self.format_duration(seconds)})"
         if index in self.detected:
             text += f"  ({tr('detected', name=self.detected[index])})"
@@ -749,13 +912,49 @@ class MainWindow(QMainWindow):
         return f"{minutes:02d}:{secs:02d}"
 
     def on_file_failed(self, index, error):
+        self._set_file_state(self.worker.files[index], "failed")
         self.results.append(("error", error))
 
     def on_file_skipped(self, index, out_path):
+        self._set_file_state(self.worker.files[index], "skipped")
         self.results.append(("skipped", out_path))
+
+    def on_file_cache_stats(self, index, file_reused, batch_reused):
+        """Records how many segments a finished file reused from the shared
+        cache, as a tooltip on its Status cell, and the running batch total
+        on the file-list summary."""
+        item = self._item_for_path(self.worker.files[index])
+        if item is not None:
+            item.setData(STATUS_COL, FILE_REUSED_ROLE, file_reused)
+            self._render_cache_tooltip(item)
+        self._batch_reused = batch_reused
+        self._render_batch_cache_tooltip()
+
+    def _render_cache_tooltip(self, item):
+        reused = item.data(STATUS_COL, FILE_REUSED_ROLE)
+        item.setToolTip(
+            STATUS_COL,
+            tr("cache_reused_file", count=reused) if reused else "",
+        )
+
+    def _render_batch_cache_tooltip(self):
+        reused = getattr(self, "_batch_reused", 0)
+        self.total_label.setToolTip(
+            tr("cache_reused_batch", count=reused) if reused else ""
+        )
 
     def on_finished(self):
         cancelled = self.worker is not None and self.worker.was_cancelled()
+        if cancelled:
+            # the in-progress file and any not-yet-started ones never got an
+            # outcome, so they'd stay stuck on "translating"/"pending"
+            for path in self.worker.files:
+                item = self._item_for_path(path)
+                if item is not None and item.data(
+                    STATUS_COL, FILE_STATE_ROLE
+                ) in ("pending", "translating"):
+                    self._set_file_state(path, "cancelled")
+        self._status_parts = []  # the live message is replaced by the summary
         self.set_busy(False)
         ok = [r for kind, r in self.results if kind == "ok"]
         skipped = [r for kind, r in self.results if kind == "skipped"]

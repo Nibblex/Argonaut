@@ -9,7 +9,12 @@ from argostranslatefiles import argostranslatefiles
 from argonaut import nllb, packages
 from argonaut.i18n import tr
 from argonaut.pdf import FastPdfTranslator, count_pdf_paragraphs
-from argonaut.translation import CancelledError, ProgressTranslation, detect_language
+from argonaut.translation import (
+    CancelledError,
+    ProgressTranslation,
+    TranslationCache,
+    detect_language,
+)
 
 
 class ModelDownloadWorker(QThread):
@@ -145,8 +150,12 @@ class TranslateWorker(QThread):
     file_done = pyqtSignal(int, str, float)  # index, output path, seconds
     file_failed = pyqtSignal(int, str)
     file_skipped = pyqtSignal(int, str)  # index, existing output path
+    # index, segments this file reused from the cache, batch total so far
+    file_cache_stats = pyqtSignal(int, int, int)
     progress_update = pyqtSignal(int, int)  # chunks done, total (0 = unknown)
-    phase_changed = pyqtSignal(str)  # description of the current phase
+    # current phase as a (translation key, kwargs) pair, so the window can
+    # re-render it if the interface language changes mid-translation
+    phase_changed = pyqtSignal(str, dict)
     language_detected = pyqtSignal(int, str)  # file index, detected language
     finished_all = pyqtSignal()
 
@@ -162,6 +171,9 @@ class TranslateWorker(QThread):
         self._cancelled = False
         self._last_emit = 0.0
         self._current_name = ""
+        # shared across every file so a repeated paragraph translates once
+        # for the whole batch (namespaced by language pair inside the proxy)
+        self._batch_cache = TranslationCache()
 
     def output_path_for(self, to_code, file_path):
         # same naming scheme as the library, but honouring the output
@@ -222,6 +234,7 @@ class TranslateWorker(QThread):
                     translation,
                     lambda done, t=total: self._report_progress(done, t),
                     self.was_cancelled,
+                    cache=self._batch_cache,
                 )
                 if is_pdf:
                     out = self.get_output_path(translation, path)
@@ -237,6 +250,7 @@ class TranslateWorker(QThread):
                     out = argostranslatefiles.translate_file(
                         proxy, path, get_output_path=self.get_output_path
                     )
+                self.file_cache_stats.emit(i, proxy.reused, self._batch_cache.reused)
                 self.file_done.emit(i, out or "", time.monotonic() - file_start)
             except CancelledError:
                 break
@@ -253,10 +267,11 @@ class TranslateWorker(QThread):
     def _report_page(self, done, total):
         self.progress_update.emit(done, total)
         self.phase_changed.emit(
-            tr("generating", name=self._current_name, done=done, total=total)
+            "generating",
+            {"name": self._current_name, "done": done, "total": total},
         )
         time.sleep(0.001)  # yield the GIL so the UI stays responsive
 
     def _report_save(self):
         self.progress_update.emit(0, 0)
-        self.phase_changed.emit(tr("saving", name=self._current_name))
+        self.phase_changed.emit("saving", {"name": self._current_name})
