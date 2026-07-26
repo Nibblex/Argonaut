@@ -1203,6 +1203,27 @@ def test_clear_cache_declined_leaves_the_cache_alone(window, monkeypatch):
     assert purged == []
 
 
+def test_help_menu_offers_the_manual_the_bug_report_and_about(window, monkeypatch):
+    from argonaut.window.about_dialog import ISSUES_URL, MANUAL_URL
+
+    opened = []
+    monkeypatch.setattr(
+        argonaut.window.QDesktopServices, "openUrl",
+        staticmethod(lambda url: opened.append(url.toString())),
+    )
+    entries = [a.text() for a in window.help_menu.actions() if not a.isSeparator()]
+    assert entries == [tr("help_manual"), tr("help_report"), tr("about")]
+
+    window.show_manual()
+    window.report_bug()
+    assert opened == [MANUAL_URL, ISSUES_URL]
+
+    window.change_language("es")
+    assert window.manual_action.text() == "Manual de usuario"
+    assert window.report_action.text() == "Informar de un error…"
+    window.change_language("en")
+
+
 def test_about_opens_the_dialog_with_the_window_state(window, monkeypatch):
     from argonaut.window.about_dialog import AboutDialog
 

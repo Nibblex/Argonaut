@@ -4,7 +4,8 @@ interface-language switching and the deferred close."""
 import os
 
 import psutil
-from PyQt5.QtCore import QSettings, QTimer, Qt
+from PyQt5.QtCore import QSettings, QTimer, QUrl, Qt
+from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
@@ -28,7 +29,7 @@ import argostranslate.settings
 from argonaut import nllb
 from argonaut.i18n import LANGUAGES, current_language, set_language, tr
 from argonaut.translation import SUPPORTED_EXTS
-from argonaut.window.about_dialog import AboutDialog
+from argonaut.window.about_dialog import ISSUES_URL, MANUAL_URL, AboutDialog
 from argonaut.window.engine import EngineMixin
 from argonaut.window.file_list import (
     COLUMN_KEYS,
@@ -213,6 +214,13 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
 
         # --- help menu ---
         self.help_menu = self.menuBar().addMenu("")
+        self.manual_action = QAction("", self)
+        self.manual_action.triggered.connect(self.show_manual)
+        self.help_menu.addAction(self.manual_action)
+        self.report_action = QAction("", self)
+        self.report_action.triggered.connect(self.report_bug)
+        self.help_menu.addAction(self.report_action)
+        self.help_menu.addSeparator()
         self.about_action = QAction("", self)
         self.about_action.triggered.connect(self.show_about)
         self.help_menu.addAction(self.about_action)
@@ -498,6 +506,8 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
         self.refresh_history_menu()
         self.update_engine_label()
         self.help_menu.setTitle(tr("menu_help"))
+        self.manual_action.setText(tr("help_manual"))
+        self.report_action.setText(tr("help_report"))
         self.about_action.setText(tr("about"))
         self.from_combo.setItemText(0, tr("detect_language"))
         self.swap_btn.setToolTip(tr("swap_tooltip"))
@@ -534,6 +544,16 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
         else:
             self._refresh_ready_state()
 
-    # --- about ---
+    # --- help ---
+    def show_manual(self):
+        """Opens the project's README, which is the user manual. It lives
+        online rather than in the application: translation runs offline,
+        but reading the documentation is one of the few things that
+        genuinely benefits from being the current version."""
+        QDesktopServices.openUrl(QUrl(MANUAL_URL))
+
+    def report_bug(self):
+        QDesktopServices.openUrl(QUrl(ISSUES_URL))
+
     def show_about(self):
         AboutDialog(self.backend, len(self.languages), parent=self).exec_()

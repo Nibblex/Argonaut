@@ -157,7 +157,12 @@ keys fall back to English). The test suite checks that every language
 carries the same keys, the same `{placeholders}` and no duplicate
 keyboard accelerators within a menu.
 
-The **Help** menu includes "About Argonaut…", a dialog with three tabs:
+The **Help** menu opens the **user manual** (this README, on GitHub) and
+**Report a bug…**, which goes straight to the issue tracker. Both open in
+your browser: translation is offline, but documentation and bug reports
+are the two things that benefit from being current.
+
+It also includes "About Argonaut…", a dialog with three tabs:
 *About* (version, a short description, the supported formats and links to
 the issue tracker and the releases), *Details* (a plain-text report with
 the Python, Qt and dependency versions, the operating system, the active

@@ -29,6 +29,8 @@ from argonaut.window.file_list import human_size
 
 ISSUES_URL = "https://github.com/Nibblex/Argonaut/issues"
 RELEASES_URL = "https://github.com/Nibblex/Argonaut/releases"
+# the README is the user manual; #readme anchors past the badges
+MANUAL_URL = "https://github.com/Nibblex/Argonaut#readme"
 
 # distribution names, as published on PyPI
 DEPENDENCIES = (
