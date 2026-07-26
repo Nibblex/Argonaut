@@ -577,3 +577,48 @@ def test_unexpected_error_still_reports_the_batch_as_finished(qapp, tmp_path):
     with pytest.raises(TypeError):
         worker.run()
     assert finished == [True]
+
+
+def test_ui_yield_is_throttled(qapp, monkeypatch):
+    """The interpreter is handed to the interface thread on a timer, not on
+    every page: reading a long book takes about as long as one millisecond
+    per page would, so yielding each time paced the phase, not the work."""
+    from argonaut import worker as worker_mod
+
+    english, spanish = make_langs()
+    worker = make_worker([], english, spanish)
+    clock, slept = [1000.0], []
+    monkeypatch.setattr(worker_mod.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(worker_mod.time, "sleep", slept.append)
+
+    worker._yield_to_ui()
+    worker._yield_to_ui()  # same instant
+    assert len(slept) == 1
+
+    clock[0] += worker.YIELD_EVERY / 2
+    worker._yield_to_ui()
+    assert len(slept) == 1  # still inside the window
+
+    clock[0] += worker.YIELD_EVERY
+    worker._yield_to_ui()
+    assert len(slept) == 2
+
+
+def test_every_page_is_still_reported_while_yields_are_throttled(qapp, monkeypatch):
+    """Throttling the hand-over must not throttle the page number: it is
+    what tells the user a long book is still moving."""
+    from argonaut import worker as worker_mod
+
+    english, spanish = make_langs()
+    worker = make_worker([], english, spanish)
+    clock, slept = [1000.0], []
+    monkeypatch.setattr(worker_mod.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(worker_mod.time, "sleep", slept.append)
+
+    reported = []
+    worker.phase_changed.connect(lambda key, kw: reported.append(kw["done"]))
+    for page in range(1, 6):
+        worker._report_pages("generating", page, 5)
+
+    assert reported == [1, 2, 3, 4, 5]
+    assert len(slept) == 1  # one hand-over for the five pages

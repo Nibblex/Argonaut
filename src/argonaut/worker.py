@@ -211,6 +211,8 @@ class TranslateWorker(CancellableThread):
     language_detected = pyqtSignal(int, str)  # file index, detected language
     finished_all = pyqtSignal()
 
+    YIELD_EVERY = 0.05  # seconds between hand-overs to the interface thread
+
     def __init__(self, src_lang, dst_lang, languages, files, output_dir=None,
                  skip_existing=False, engine_id="argos", parent=None):
         super().__init__(parent)
@@ -222,6 +224,7 @@ class TranslateWorker(CancellableThread):
         self.skip_existing = skip_existing
         self.engine_id = engine_id
         self._last_emit = 0.0
+        self._last_yield = 0.0
         self._current_name = ""
         self._total_chunks = 0  # 0 until the file says how much work it holds
         self._pkg_versions = None  # pair -> version, read once per batch
@@ -384,7 +387,21 @@ class TranslateWorker(CancellableThread):
         self.phase_changed.emit(
             key, {"name": self._current_name, "done": done, "total": total}
         )
-        time.sleep(0.001)  # yield the GIL so the UI stays responsive
+        self._yield_to_ui()
+
+    def _yield_to_ui(self):
+        """Hands the interpreter over to the interface thread for a moment.
+
+        Not on every page: reading a 400-page book takes about as long as
+        one millisecond per page would, so sleeping each time paced the
+        phase rather than the work. Yielding at most every YIELD_EVERY
+        seconds still gives the window dozens of chances a second to
+        repaint, while costing a fixed fraction of the run instead of a
+        toll per page."""
+        now = time.monotonic()
+        if now - self._last_yield >= self.YIELD_EVERY:
+            self._last_yield = now
+            time.sleep(0.001)
 
     def _report_read(self, done, total):
         # reading is preparation: moving the bar here would sweep it to 100%
