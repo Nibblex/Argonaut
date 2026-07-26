@@ -143,10 +143,15 @@ it is an error.
 
 ## Interface language
 
-The interface starts in English. In the **Language** menu you can switch
-to Spanish, French, German, Italian, Portuguese, Russian, Chinese,
-Japanese, Dutch, Polish or Turkish; the change applies instantly and the
-preference is saved (QSettings) for future launches. To add a language
+The interface starts in the language your desktop is set to, falling back
+to English when that is one Argonaut does not speak (Qt is asked for the
+whole ordered preference list, so a second choice can still match, and
+region and script are ignored — `pt-BR` gets the Portuguese strings). In
+the **Language** menu you can switch to Spanish, French, German, Italian,
+Portuguese, Russian, Chinese, Japanese, Dutch, Polish or Turkish; the
+change applies instantly and *that* is what gets saved (QSettings). Until
+you choose one, the desktop keeps deciding — so changing the system
+language changes Argonaut's too. To add a language
 just add its dictionary in `i18n.py` and list it in `LANGUAGES` (missing
 keys fall back to English). The test suite checks that every language
 carries the same keys, the same `{placeholders}` and no duplicate

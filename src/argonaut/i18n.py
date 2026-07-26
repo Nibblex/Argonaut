@@ -5,7 +5,7 @@ English is the default language and acts as a fallback: if a language is
 missing a key, the English string is used.
 """
 
-from PyQt5.QtCore import QSettings
+from PyQt5.QtCore import QLocale, QSettings
 
 DEFAULT = "en"
 
@@ -2029,11 +2029,36 @@ def current_language():
     return _current
 
 
+def system_language():
+    """The interface language the desktop asks for, or None when it asks
+    for one Argonaut does not speak.
+
+    Qt reports the user's ordered preferences rather than a single locale
+    ("es-AR", "es", "en-US"), so the first entry with strings behind it
+    wins and the rest fall through. Region and script are dropped: the
+    strings are per language, so es-AR and es-ES read the same, and every
+    Chinese variant gets the one Chinese translation there is."""
+    for tag in QLocale.system().uiLanguages():
+        code = tag.replace("-", "_").split("_")[0].lower()
+        if code in STRINGS:
+            return code
+    return None
+
+
 def load_language():
-    """Loads the saved language (or the default one) at startup."""
+    """Resolves the language at startup: the one the user chose, otherwise
+    the desktop's, otherwise English.
+
+    An automatic match is deliberately not saved. Only choosing from the
+    Language menu writes the setting, so a machine whose locale changes is
+    followed until the user states a preference — and from then on that
+    preference is what holds."""
     global _current
-    code = QSettings().value("ui_language", DEFAULT)
-    _current = code if code in STRINGS else DEFAULT
+    saved = QSettings().value("ui_language", "")
+    if saved in STRINGS:
+        _current = saved
+    else:
+        _current = system_language() or DEFAULT
     return _current
 
 
