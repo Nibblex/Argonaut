@@ -24,8 +24,10 @@ Two engines are available from *Settings → Engine*:
 
 ## Requirements
 
+Python 3.10 or newer (the pymupdf wheels Argonaut depends on need it).
+
 ```bash
-pip install PyQt5 argos-translate-lt argos-translate-files langdetect psutil
+pip install PyQt5 argos-translate-lt argos-translate-files langdetect psutil pymupdf
 ```
 
 You need at least one language package installed. Open
@@ -52,50 +54,7 @@ pip install -e .
 python3 -m argonaut
 ```
 
-## Structure
-
-All modules live in the `src/argonaut/` package:
-
-- `__init__.py` — package version (`__version__`).
-- `main.py` — entry point; silences dependency warnings and launches
-  the window.
-- `window.py` — main window (PyQt5).
-- `worker.py` — thread that translates the file list and emits progress signals.
-- `pdf.py` — fixed PDF translator (paragraphs, progress, cancellation).
-- `translation.py` — language detection, supported formats and the
-  progress/cache wrapper.
-- `nllb.py` — optional NLLB-200 backend (CTranslate2 + SentencePiece)
-  exposing the same duck-typed API as argostranslate.
-- `packages.py` — Argos package index, download, installation and removal.
-- `package_dialog.py` — dialog to browse, install and remove packages.
-- `i18n.py` — interface languages (English by default, Spanish, French,
-  German, Italian and Portuguese).
-
-Packaging lives at the top level: `pyproject.toml` (PyPI),
-`io.github.nibblex.Argonaut.yml` (Flatpak manifest) and `data/`
-(desktop entry, AppStream metainfo and icon for Flathub).
-
-## Interface language
-
-The interface starts in English. In the **Language** menu you can switch
-to Spanish, French, German, Italian or Portuguese; the change applies
-instantly and the preference is saved (QSettings) for future launches.
-To add a language just add its dictionary in `i18n.py` (missing keys fall
-back to English). The **Help** menu includes "About Argonaut", showing
-the version, a short description of the project, the translation engine,
-the supported formats, the author and the license.
-
-## Persistent settings
-
-When the window closes, QSettings stores — besides the interface
-language — the source and target languages, the output folder and the
-window size/position; everything is restored on the next launch. If a
-saved language is no longer installed or the folder no longer exists,
-the default value is used. The active engine, the translation quality
-(*Settings → Translation quality*: best quality, or a faster greedy mode
-that trades a little accuracy for speed) and the number of CPU threads
-(*Settings → CPU threads*, defaulting to every detected core) are saved
-as soon as they change.
+## Translating documents
 
 1. Choose the source and target languages (⇄ button to swap them).
    By default the source is "Detect language": each document's language
@@ -116,12 +75,106 @@ as soon as they change.
 Note about PDFs: they are translated paragraph by paragraph while
 preserving the layout, so a long document can take a while on CPU.
 The bar shows the real percentage of translated paragraphs and an
-estimate of the remaining time. Rotated
+estimate of the remaining time, and the status line names the phase and
+the page it is on (reading, translating, generating, saving) so a long
+book shows progress instead of an apparently idle bar. Rotated
 text (e.g. vertical watermarks) is kept untranslated, and links from
 the original document are not preserved in the translated copy.
 
 Supported formats: `.txt` `.docx` `.odt` `.odp` `.pptx` `.epub`
 `.html` `.srt` `.pdf`
+
+## Settings
+
+Everything below lives in the **Settings** menu and is remembered
+between sessions.
+
+- **Engine** — Argos Translate or NLLB-200 (see above).
+- **CPU threads** — capped at the detected core count and defaulting to
+  all of them. The NLLB engine splits this budget into several parallel
+  CTranslate2 workers of about four threads each, which measured faster
+  than one wide worker; budgets below eight threads are left as a single
+  worker, where splitting measured slower.
+- **Translation quality** — *Best quality*, or *Fast*, which decodes
+  greedily: roughly 1.7× faster for a small loss in accuracy. The two
+  modes never share cache entries, since their output differs.
+- **Theme** — System (the desktop's own look, the default), Light or
+  Dark.
+- **Download speed units** — network units (`16.8 Mbps`) or the bytes a
+  download manager shows (`2.0 MB/s`).
+- **Cache** — see below.
+- **Manage language packages…** — the Argos package dialog.
+- **Delete the NLLB-200 model…** — frees the ~630 MB the model occupies.
+
+### Translation cache
+
+A segment translated once is reused for the rest of the batch and, by
+default, across sessions: a paragraph repeated in several files reaches
+the engine only once. The window reports how many segments each file and
+the batch as a whole reused.
+
+The cache lives in a small sqlite database at
+`~/.local/share/argonaut/translation_cache.db` (or under `$XDG_DATA_HOME`).
+Entries are namespaced by engine, model version and language pair, so
+upgrading a language package stops serving the old model's output. From
+*Settings → Cache* you can turn it off, choose how long unused entries
+are kept (never, 30 days, 90 days — the default — or a year; expired
+ones are pruned when a translation starts), see the database's size and
+entry count, and clear it.
+
+## Interface language
+
+The interface starts in English. In the **Language** menu you can switch
+to Spanish, French, German, Italian or Portuguese; the change applies
+instantly and the preference is saved (QSettings) for future launches.
+To add a language just add its dictionary in `i18n.py` (missing keys fall
+back to English).
+
+The **Help** menu includes "About Argonaut…", a dialog with three tabs:
+*About* (version, a short description, the supported formats and links to
+the issue tracker and the releases), *Details* (a plain-text report with
+the Python, Qt and dependency versions, the operating system, the active
+engine, whether the NLLB model is installed and where the cache lives —
+copyable with one button, ready to paste into a bug report) and
+*Credits and licenses*.
+
+## Persistent settings
+
+When the window closes, QSettings stores — besides the interface
+language — the source and target languages, the output folder and the
+window size/position; everything is restored on the next launch. If a
+saved language is no longer installed or the folder no longer exists,
+the default value is used. Everything in the *Settings* menu is saved as
+soon as it changes.
+
+## Structure
+
+All modules live in the `src/argonaut/` package:
+
+- `__init__.py` — package version (`__version__`).
+- `main.py` — entry point; silences dependency warnings and launches
+  the window.
+- `window/` — the main window, split by responsibility:
+  `main_window.py` (widgets, menus and window state), `engine.py`
+  (backend, threads, quality, cache menu and the NLLB model),
+  `files.py` and `file_list.py` (the file list and its columns),
+  `translation_run.py` (driving a batch and reporting its progress),
+  `theme.py` (light/dark/system palettes) and `about_dialog.py`.
+- `worker.py` — thread that translates the file list and emits progress signals.
+- `pdf.py` — fixed PDF translator (paragraphs, progress, cancellation).
+- `translation.py` — language detection, supported formats and the
+  progress/cache wrapper.
+- `nllb.py` — optional NLLB-200 backend (CTranslate2 + SentencePiece)
+  exposing the same duck-typed API as argostranslate.
+- `download.py` — shared streaming download with progress and cancellation.
+- `packages.py` — Argos package index, download, installation and removal.
+- `package_dialog.py` — dialog to browse, install and remove packages.
+- `i18n.py` — interface languages (English by default, Spanish, French,
+  German, Italian and Portuguese).
+
+Packaging lives at the top level: `pyproject.toml` (PyPI),
+`io.github.nibblex.Argonaut.yml` (Flatpak manifest) and `data/`
+(desktop entry, AppStream metainfo and icon for Flathub).
 
 ## Tests
 
@@ -141,11 +194,20 @@ and add a `<release>` entry in `data/*.metainfo.xml`.
 
 **PyPI**
 
+Publishing is automated: commit the bump, tag it and create a GitHub
+release for that tag.
+
 ```bash
-pip install build twine
-python3 -m build
-twine upload dist/*
+git tag -a v1.5.0 -m "Argonaut 1.5.0"
+git push origin main && git push origin v1.5.0
+gh release create v1.5.0 --title "Argonaut 1.5.0" --notes-file notes.md
 ```
+
+Publishing the release triggers `.github/workflows/publish.yml`, which
+builds the wheel and the sdist and uploads them to PyPI via trusted
+publishing. Pushing the tag alone does not publish anything, so the CI
+run on `main` (the test suite on Python 3.10 through 3.14) can be used
+as a gate: a version is permanent on PyPI once uploaded.
 
 **Flathub**
 
