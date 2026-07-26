@@ -382,6 +382,113 @@ def test_remove_declined_keeps_packages(dialog, monkeypatch):
     assert f"({tr('pkg_installed')})" in dialog.package_list.item(1).text()
 
 
+def test_size_arriving_for_a_checked_package_updates_the_summary(dialog):
+    item = dialog.package_list.item(0)
+    item.setCheckState(Qt.Checked)
+    dialog.on_size_ready(0, 30 * 2**20)
+    assert dialog.selection_label.text() == tr(
+        "pkg_selection", count=1, size="30 MB"
+    )
+
+
+def test_actions_with_nothing_checked_are_no_ops(dialog):
+    dialog.start_download([], "install")
+    assert dialog.installer is None
+    # the confirmation dialog must never appear either (conftest fails
+    # loudly on any unpatched modal)
+    dialog.start_remove()
+    assert dialog.status.text() == tr("ready")
+
+
+def test_package_download_progress_shows_the_speed(dialog):
+    from PyQt5.QtCore import QSettings
+
+    dialog.on_progress(2, 4, 50_000)
+    assert dialog.progress.format() == "%p% — 2/4 MB — 400 kbps"
+    dialog.on_progress(3, 4, 0.0)  # unknown yet: only the size
+    assert dialog.progress.format() == "%p% — 3/4 MB"
+
+    QSettings().setValue("speed_units", "bytes")  # the setting reaches here too
+    dialog.on_progress(2, 4, 50_000)
+    assert dialog.progress.format() == "%p% — 2/4 MB — 49 KB/s"
+
+
+def test_cancel_button_asks_the_installer_to_stop(dialog):
+    class FakeInstaller:
+        cancelled = False
+
+        def cancel(self):
+            self.cancelled = True
+
+        def isRunning(self):
+            return False  # lets the teardown close the dialog untroubled
+
+    dialog.installer = FakeInstaller()
+    dialog.cancel_install()
+    assert dialog.installer.cancelled
+    assert not dialog.cancel_btn.isEnabled()
+    assert dialog.status.text() == tr("cancelling")
+
+
+def test_cancelled_install_summary_mentions_it(dialog):
+    class FakeInstaller:
+        def was_cancelled(self):
+            return True
+
+    dialog.installer = FakeInstaller()
+    dialog.on_install_finished(1)  # one package landed before the cancel
+    text = dialog.status.text()
+    assert tr("cancelled") in text
+    assert tr("pkg_done", count=1) in text
+
+
+def test_remove_failure_is_reported_and_keeps_the_package(dialog, monkeypatch):
+    from PyQt5.QtWidgets import QMessageBox
+
+    def broken_uninstall(pair):
+        raise RuntimeError("locked")
+
+    monkeypatch.setattr(packages, "uninstall", broken_uninstall)
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
+    )
+    emitted = []
+    dialog.packages_changed.connect(lambda: emitted.append(True))
+    dialog.package_list.item(1).setCheckState(Qt.Checked)
+    dialog.remove_btn.click()
+
+    assert emitted == []  # nothing actually changed
+    assert tr("errors_header") in dialog.status.text()
+    assert "locked" in dialog.status.text()
+    assert f"({tr('pkg_installed')})" in dialog.package_list.item(1).text()
+
+
+def test_close_asks_running_workers_to_stop(dialog):
+    class FakeThread:
+        def __init__(self):
+            self.cancelled = False
+            self.waited = False
+
+        def isRunning(self):
+            return True
+
+        def cancel(self):
+            self.cancelled = True
+
+        def wait(self, ms=None):
+            self.waited = True
+
+    installer, sizer, lister = FakeThread(), FakeThread(), FakeThread()
+    dialog.installer = installer
+    dialog.sizer = sizer
+    dialog.lister = lister
+    dialog.close()
+
+    assert installer.cancelled and installer.waited
+    assert sizer.cancelled and sizer.waited
+    assert lister.waited  # the lister has no cancel, only a bounded wait
+
+
 def test_index_error_is_shown(qtbot, monkeypatch):
     def broken_index():
         raise RuntimeError("offline")

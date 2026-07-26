@@ -3,12 +3,12 @@
 import os
 import time
 
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QSettings, QThread, pyqtSignal
 from argostranslatefiles import argostranslatefiles
 
 from argonaut import nllb, packages
 from argonaut.i18n import tr
-from argonaut.pdf import FastPdfTranslator, count_pdf_paragraphs
+from argonaut.pdf import FastPdfTranslator
 from argonaut.translation import (
     CancelledError,
     ProgressTranslation,
@@ -17,11 +17,10 @@ from argonaut.translation import (
 )
 
 
-class ModelDownloadWorker(QThread):
-    """Downloads the NLLB model without blocking the UI."""
-
-    progress = pyqtSignal(int, int)  # done MB, total MB
-    download_finished = pyqtSignal(bool, str)  # ok, error ("" when cancelled)
+class CancellableThread(QThread):
+    """A worker the window can ask to stop. Nothing is interrupted by force:
+    the thread checks ``was_cancelled`` at its own safe points, so a call
+    already in flight still has to return first."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,19 +29,86 @@ class ModelDownloadWorker(QThread):
     def cancel(self):
         self._cancelled = True
 
+    def was_cancelled(self):
+        return self._cancelled
+
+
+def speed_units():
+    """The configured family for download-speed labels: network bits
+    ("bits", the default) or the bytes a download manager shows."""
+    saved = QSettings().value("speed_units", "bits")
+    return saved if saved in ("bits", "bytes") else "bits"
+
+
+def quality_mode():
+    """The configured speed/quality trade-off: "quality" (each engine's
+    default beam width, the default) or "fast" (greedy decoding)."""
+    saved = QSettings().value("quality_mode", "quality")
+    return saved if saved in ("quality", "fast") else "quality"
+
+
+def speed_text(bytes_per_second, units="bits"):
+    """Download speed label; empty while the speed is still unknown.
+    "bits" renders network units ("16.8 Mbps", "400 kbps"); "bytes" what a
+    download manager shows ("2.0 MB/s", "400 KB/s"), binary like the MB
+    figures next to it."""
+    if bytes_per_second <= 0:
+        return ""
+    if units == "bytes":
+        if bytes_per_second >= 2**20:
+            return f"{bytes_per_second / 2**20:.1f} MB/s"
+        return f"{max(1, round(bytes_per_second / 1024))} KB/s"
+    bits = bytes_per_second * 8
+    if bits >= 1_000_000:
+        return f"{bits / 1_000_000:.1f} Mbps"
+    return f"{max(1, round(bits / 1000))} kbps"
+
+
+class MegabyteProgress:
+    """Forwards byte counts to a (done MB, total MB, bytes per second)
+    signal, but only when the megabyte figure actually changes: a download
+    otherwise reports thousands of times for a bar that can show a few
+    hundred steps. The speed is measured over a short sliding window, so
+    it follows the connection's current pace rather than the download's
+    lifetime average (0.0 until the first window completes)."""
+
+    WINDOW = 1.0  # seconds per speed sample
+
+    def __init__(self, signal, clock=time.monotonic):
+        self._signal = signal
+        self._clock = clock
+        self.reset()
+
+    def reset(self):
+        self._last = -1
+        self._speed = 0.0
+        self._anchor = None  # (time, bytes) the current window started at
+
+    def __call__(self, done, total):
+        now = self._clock()
+        if self._anchor is None:
+            self._anchor = (now, done)
+        t0, done0 = self._anchor
+        if now - t0 >= self.WINDOW:
+            self._speed = (done - done0) / (now - t0)
+            self._anchor = (now, done)
+        mb = done >> 20
+        if mb != self._last:
+            self._last = mb
+            self._signal.emit(mb, max(1, total >> 20), self._speed)
+
+
+class ModelDownloadWorker(CancellableThread):
+    """Downloads the NLLB model without blocking the UI."""
+
+    progress = pyqtSignal(int, int, float)  # done MB, total MB, bytes/sec
+    download_finished = pyqtSignal(bool, str)  # ok, error ("" when cancelled)
+
     def run(self):
-        last = -1
-
-        def report(done, total):
-            nonlocal last
-            mb = done >> 20
-            if mb != last:
-                last = mb
-                self.progress.emit(mb, max(1, total >> 20))
-
         try:
             nllb.download_model(
-                on_progress=report, is_cancelled=lambda: self._cancelled
+                on_progress=MegabyteProgress(self.progress),
+                is_cancelled=self.was_cancelled,
             )
         except CancelledError:
             self.download_finished.emit(False, "")
@@ -66,7 +132,7 @@ class PackageListWorker(QThread):
             self.listed.emit(available, "")
 
 
-class PackageSizeWorker(QThread):
+class PackageSizeWorker(CancellableThread):
     """Fetches package archive sizes with HEAD requests, a few at a time."""
 
     size_ready = pyqtSignal(int, int)  # list row, bytes (0 = unknown)
@@ -74,10 +140,6 @@ class PackageSizeWorker(QThread):
     def __init__(self, to_measure, parent=None):
         super().__init__(parent)
         self.to_measure = to_measure  # list of (row, package)
-        self._cancelled = False
-
-    def cancel(self):
-        self._cancelled = True
 
     def run(self):
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -94,38 +156,25 @@ class PackageSizeWorker(QThread):
                 self.size_ready.emit(futures[future], future.result())
 
 
-class PackageInstallWorker(QThread):
+class PackageInstallWorker(CancellableThread):
     """Downloads and installs a list of Argos packages."""
 
     package_started = pyqtSignal(int, int, str)  # index, total, "English → Spanish"
-    progress = pyqtSignal(int, int)  # done MB, total MB of the current package
+    progress = pyqtSignal(int, int, float)  # done MB, total MB, bytes/sec
     package_failed = pyqtSignal(str, str)  # description, error
     install_finished = pyqtSignal(int)  # packages installed
 
     def __init__(self, to_install, parent=None):
         super().__init__(parent)
         self.to_install = to_install
-        self._cancelled = False
-        self._last_mb = -1
-
-    def cancel(self):
-        self._cancelled = True
-
-    def was_cancelled(self):
-        return self._cancelled
-
-    def _report(self, done, total):
-        mb = done >> 20
-        if mb != self._last_mb:
-            self._last_mb = mb
-            self.progress.emit(mb, max(1, total >> 20))
+        self._report = MegabyteProgress(self.progress)
 
     def run(self):
         installed = 0
         for i, pkg in enumerate(self.to_install):
             if self._cancelled:
                 break
-            self._last_mb = -1
+            self._report.reset()  # each package has its own byte count
             self.package_started.emit(
                 i, len(self.to_install), f"{pkg.from_name} → {pkg.to_name}"
             )
@@ -142,9 +191,11 @@ class PackageInstallWorker(QThread):
         self.install_finished.emit(installed)
 
 
-class TranslateWorker(QThread):
+class TranslateWorker(CancellableThread):
     """Translates a list of files. If src_lang is None, detects each
-    file's language separately."""
+    file's language separately. Segments repeated across the batch are
+    served from a shared cache, and files whose output already exists
+    can be skipped instead of retranslated."""
 
     file_started = pyqtSignal(int, str)
     file_done = pyqtSignal(int, str, float)  # index, output path, seconds
@@ -160,7 +211,7 @@ class TranslateWorker(QThread):
     finished_all = pyqtSignal()
 
     def __init__(self, src_lang, dst_lang, languages, files, output_dir=None,
-                 skip_existing=False, parent=None):
+                 skip_existing=False, engine_id="argos", parent=None):
         super().__init__(parent)
         self.src_lang = src_lang
         self.dst_lang = dst_lang
@@ -168,12 +219,21 @@ class TranslateWorker(QThread):
         self.files = files
         self.output_dir = output_dir  # None = next to each original
         self.skip_existing = skip_existing
-        self._cancelled = False
+        self.engine_id = engine_id
         self._last_emit = 0.0
         self._current_name = ""
+        self._total_chunks = 0  # 0 until the file says how much work it holds
+        self._pkg_versions = None  # pair -> version, read once per batch
         # shared across every file so a repeated paragraph translates once
-        # for the whole batch (namespaced by language pair inside the proxy)
-        self._batch_cache = TranslationCache()
+        # for the whole batch (namespaced by engine, model version and
+        # language pair inside the proxy); the settings are read here but
+        # the cache itself is opened in run(): opening prunes expired
+        # entries, too much work for the click handler that constructs it
+        cache_on = QSettings().value("cache_enabled", True, type=bool)
+        self._greedy = quality_mode() == "fast"
+        self._cache_ttl_days = QSettings().value("cache_ttl_days", 90, type=int)
+        self._cache_db_path = TranslationCache.default_db_path() if cache_on else None
+        self._batch_cache = None
 
     def output_path_for(self, to_code, file_path):
         # same naming scheme as the library, but honouring the output
@@ -189,12 +249,6 @@ class TranslateWorker(QThread):
         # the target is always the destination language, whatever the source
         # turns out to be, so the skip check needs no language detection
         return self.output_path_for(self.dst_lang.code, file_path)
-
-    def cancel(self):
-        self._cancelled = True
-
-    def was_cancelled(self):
-        return self._cancelled
 
     def resolve_translation(self, index, path):
         src = self.src_lang
@@ -213,7 +267,36 @@ class TranslateWorker(QThread):
             )
         return translation
 
+    def _engine_version(self, translation):
+        """Version tag for the cache namespace, so entries produced by an
+        older model stop being served after a package upgrade."""
+        if self.engine_id != "argos":
+            version = nllb.MODEL_REPO  # one fixed model, replaced only by us
+        else:
+            if self._pkg_versions is None:
+                self._pkg_versions = packages.installed_versions()
+            pair = (translation.from_lang.code, translation.to_lang.code)
+            version = self._pkg_versions.get(pair, "")
+        # greedy output is not beam output: the modes never serve each
+        # other's entries, and quality-mode keys stay as they always were
+        return f"{version}+greedy" if self._greedy else version
+
     def run(self):
+        self._batch_cache = TranslationCache(
+            self._cache_db_path, ttl_days=self._cache_ttl_days
+        )
+        try:
+            self._translate_files()
+        finally:
+            # a cancelled batch has to let go of its database connection and
+            # of the segments it has translated so far, just like a finished one
+            self._batch_cache.close()
+            # the window leaves its busy state on this signal, so it is
+            # emitted from a finally: an unexpected error must never leave the
+            # interface stuck with every control disabled
+            self.finished_all.emit()
+
+    def _translate_files(self):
         for i, path in enumerate(self.files):
             if self._cancelled:
                 break
@@ -227,21 +310,25 @@ class TranslateWorker(QThread):
                         self.file_skipped.emit(i, existing)
                         continue
                 translation = self.resolve_translation(i, path)
-                is_pdf = path.lower().endswith(".pdf")
-                total = count_pdf_paragraphs(path) if is_pdf else 0
-                self.progress_update.emit(0, total)
+                self._total_chunks = 0
+                self.progress_update.emit(0, 0)
                 proxy = ProgressTranslation(
                     translation,
-                    lambda done, t=total: self._report_progress(done, t),
+                    self._report_progress,
                     self.was_cancelled,
                     cache=self._batch_cache,
+                    engine_id=self.engine_id,
+                    engine_version=self._engine_version(translation),
                 )
-                if is_pdf:
+                if path.lower().endswith(".pdf"):
                     out = self.get_output_path(translation, path)
                     FastPdfTranslator(
                         pdf_path=path,
                         output_path=out,
                         underlying_translation=proxy,
+                        on_count_ready=self._report_total,
+                        on_read=self._report_read,
+                        on_translated_page=self._report_translated_page,
                         on_page=self._report_page,
                         on_save=self._report_save,
                         is_cancelled=self.was_cancelled,
@@ -256,21 +343,42 @@ class TranslateWorker(QThread):
                 break
             except Exception as exc:  # noqa: BLE001
                 self.file_failed.emit(i, str(exc))
-        self.finished_all.emit()
 
-    def _report_progress(self, done, total):
+    def _report_total(self, total):
+        """How many chunks the current file holds, known once it is parsed."""
+        self._total_chunks = total
+        self.progress_update.emit(0, total)
+
+    def _report_progress(self, done):
         now = time.monotonic()
+        total = self._total_chunks
         if done == total or now - self._last_emit > 0.2:
             self._last_emit = now
             self.progress_update.emit(done, total)
 
-    def _report_page(self, done, total):
-        self.progress_update.emit(done, total)
+    def _report_pages(self, key, done, total, move_bar=True):
+        """Says which page of the current file a phase is on. On a long book
+        the percentage can sit on the same figure for a minute, so the page
+        number is what tells the user the run is alive."""
+        if move_bar:
+            self.progress_update.emit(done, total)
         self.phase_changed.emit(
-            "generating",
-            {"name": self._current_name, "done": done, "total": total},
+            key, {"name": self._current_name, "done": done, "total": total}
         )
         time.sleep(0.001)  # yield the GIL so the UI stays responsive
+
+    def _report_read(self, done, total):
+        # reading is preparation: moving the bar here would sweep it to 100%
+        # and send it back to 0% when the translation itself starts, so the
+        # page number goes in the message and the bar stays indeterminate
+        self._report_pages("reading", done, total, move_bar=False)
+
+    def _report_translated_page(self, done, total):
+        # the bar is already counting paragraphs, a finer measure than pages
+        self._report_pages("translating_page", done, total, move_bar=False)
+
+    def _report_page(self, done, total):
+        self._report_pages("generating", done, total)
 
     def _report_save(self):
         self.progress_update.emit(0, 0)

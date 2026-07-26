@@ -91,9 +91,11 @@ When the window closes, QSettings stores — besides the interface
 language — the source and target languages, the output folder and the
 window size/position; everything is restored on the next launch. If a
 saved language is no longer installed or the folder no longer exists,
-the default value is used. The active engine and the number of CPU
-threads (*Settings → CPU threads*, capped at the detected core count and
-defaulting to four) are saved as soon as they change.
+the default value is used. The active engine, the translation quality
+(*Settings → Translation quality*: best quality, or a faster greedy mode
+that trades a little accuracy for speed) and the number of CPU threads
+(*Settings → CPU threads*, defaulting to every detected core) are saved
+as soon as they change.
 
 1. Choose the source and target languages (⇄ button to swap them).
    By default the source is "Detect language": each document's language

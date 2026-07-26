@@ -23,6 +23,8 @@ from argonaut.worker import (
     PackageInstallWorker,
     PackageListWorker,
     PackageSizeWorker,
+    speed_text,
+    speed_units,
 )
 
 PACKAGE_ROLE = Qt.UserRole
@@ -160,7 +162,7 @@ class PackageDialog(QDialog):
         text = f"{pkg.from_name} → {pkg.to_name}"
         size = item.data(SIZE_ROLE)
         if size:
-            text += f"  ·  {max(1, round(size / 2**20))} MB"
+            text += f"  ·  {mb_text(size)}"
         # the version in use if installed, otherwise the one on offer
         text += f"  ·  v{item.data(INSTALLED_VERSION_ROLE) or pkg.package_version}"
         state = item.data(STATE_ROLE)
@@ -259,7 +261,7 @@ class PackageDialog(QDialog):
             size_text = "—"
         else:
             prefix = "≥ " if 0 in sizes else ""
-            size_text = f"{prefix}{max(1, round(total / 2**20))} MB"
+            size_text = prefix + mb_text(total)
         self.selection_label.setText(
             tr("pkg_selection", count=len(items), size=size_text)
         )
@@ -314,10 +316,14 @@ class PackageDialog(QDialog):
             tr("pkg_downloading", name=description, index=index + 1, total=total)
         )
 
-    def on_progress(self, done, total):
+    def on_progress(self, done, total, speed):
         self.progress.setRange(0, total)
         self.progress.setValue(done)
-        self.progress.setFormat(f"%p% — {done}/{total} MB")
+        text = f"%p% — {done}/{total} MB"
+        rate = speed_text(speed, speed_units())
+        if rate:
+            text += f" — {rate}"
+        self.progress.setFormat(text)
 
     def on_install_finished(self, count):
         cancelled = self.installer is not None and self.installer.was_cancelled()
@@ -385,6 +391,11 @@ class PackageDialog(QDialog):
         if self.lister.isRunning():
             self.lister.wait(5000)
         super().closeEvent(event)
+
+
+def mb_text(size_bytes):
+    """Whole-megabyte label used in the list and the selection summary."""
+    return f"{max(1, round(size_bytes / 2**20))} MB"
 
 
 def size_key(pkg):

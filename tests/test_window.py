@@ -16,6 +16,7 @@ from argonaut.window import (
     TYPE_COL,
     MainWindow,
 )
+from argonaut.worker import TranslateWorker
 from tests.conftest import FakeLanguage, FakeTranslation
 
 
@@ -234,6 +235,22 @@ def test_sort_by_modified_is_numeric(window, tmp_path):
     assert [_os.path.basename(p) for p in window.paths()] == ["newer.txt", "older.txt"]
 
 
+def test_status_column_sorts_by_state_rank(window):
+    from PyQt5.QtCore import Qt
+
+    window.add_paths(["/a/one.txt", "/a/two.txt", "/a/three.txt"])
+    window._set_file_state("/a/one.txt", "failed")
+    window._set_file_state("/a/two.txt", "pending")
+    window._set_file_state("/a/three.txt", "done")
+
+    # the column sorts by the state's rank in the batch lifecycle, not by
+    # the translated label's alphabetical order
+    window.file_list.sortByColumn(STATUS_COL, Qt.AscendingOrder)
+    assert [os.path.basename(p) for p in window.paths()] == [
+        "two.txt", "three.txt", "one.txt"  # pending < done < failed
+    ]
+
+
 def test_status_column_tracks_translation(window, qtbot, tmp_path):
     doc = tmp_path / "doc.txt"
     doc.write_text("hello world")
@@ -295,6 +312,9 @@ def test_cancelling_marks_unfinished_files_as_cancelled(window):
     class FakeWorker:
         files = ["/a/one.txt", "/a/two.txt", "/a/three.txt"]
 
+        def isRunning(self):
+            return False
+
         def was_cancelled(self):
             return True
 
@@ -310,12 +330,136 @@ def test_cancelling_marks_unfinished_files_as_cancelled(window):
     assert status("/a/three.txt") == tr("status_cancelled")  # never started
 
 
-def test_language_change_updates_the_live_status_mid_translation(window):
-    class FakeWorker:
+def test_cache_stays_manageable_while_disabled(window, monkeypatch):
+    """Turning the cache off does not delete the file it already filled, so
+    its expiry and the clear action have to keep working."""
+    from PyQt5.QtCore import QSettings
+
+    window.toggle_cache(False)
+    window.refresh_cache_menu()
+
+    assert window.cache_ttl_menu.isEnabled()
+    assert window.cache_clear_action.isEnabled()
+
+    window.change_cache_ttl(30)
+    assert QSettings().value("cache_ttl_days", type=int) == 30
+
+    purged = []
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
+    )
+    monkeypatch.setattr(
+        argonaut.window.TranslationCache, "purge_db",
+        staticmethod(lambda path: purged.append(path) or 7),
+    )
+    window.clear_cache()
+    assert len(purged) == 1
+    assert tr("cache_cleared", count=7) in window.status.text()
+
+
+def test_closing_mid_translation_never_blocks_the_interface(window, qtbot):
+    """The close is deferred instead of waiting on the thread: an engine call
+    can take seconds to return, and blocking there froze the whole window."""
+    class SlowWorker:
         files = ["/a/doc.txt"]
+        cancelled = False
+        stopped = False
+
+        def isRunning(self):
+            return not self.stopped
+
+        def cancel(self):
+            self.cancelled = True
+
+    worker = SlowWorker()
+    window.worker = worker
+    window.show()
+    window.close()
+
+    assert worker.cancelled  # the thread was asked to stop
+    assert window._closing  # ...and the close is pending, not abandoned
+    assert window.isVisible()  # the window outlives the still-running thread
+
+    # nothing happens while the worker is still stopping
+    window.close_when_idle()
+    assert window.isVisible()
+
+    # once it has really stopped, the window closes on its own
+    worker.stopped = True
+    window.close_when_idle()
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=1000)
+
+
+def test_cancelling_keeps_the_phase_next_to_the_message(window):
+    """A cancelled engine call can take a minute to come back; showing which
+    page it is finishing is what distinguishes waiting from a freeze."""
+    class SlowWorker:
+        files = ["/a/doc.pdf"]
 
         def isRunning(self):
             return True
+
+        def cancel(self):
+            pass
+
+    window.worker = SlowWorker()
+    window.on_phase_changed("generating", {"name": "doc.pdf", "done": 2, "total": 17})
+    window.cancel_translation()
+
+    text = window.status.text()
+    assert tr("cancelling") in text
+    assert tr("generating", name="doc.pdf", done=2, total=17) in text
+
+    window.cancel_translation()  # a second click must not stack the message
+    assert window.status.text().count(tr("cancelling")) == 1
+
+
+def test_language_choice_is_locked_while_translating(window):
+    """The batch keeps the pair it started with, so an editable combo would
+    have the window claim a translation that is not the one running."""
+    window.set_busy(True)
+    assert not window.from_combo.isEnabled()
+    assert not window.to_combo.isEnabled()
+    assert not window.swap_btn.isEnabled()
+
+    window.set_busy(False)
+    assert window.from_combo.isEnabled()
+    assert window.to_combo.isEnabled()
+    assert window.swap_btn.isEnabled()
+
+
+def test_cancel_click_landing_after_the_batch_ends_is_ignored(window):
+    """Otherwise the window stayed stuck on "cancelling…" forever: the
+    summary had already been shown, so nothing reset the busy state."""
+    class DoneWorker:
+        files = ["/a/doc.txt"]
+        cancelled = False
+
+        def isRunning(self):
+            return False
+
+        def cancel(self):
+            self.cancelled = True
+
+    worker = DoneWorker()
+    window.worker = worker
+    window.cancel_translation()
+
+    assert not worker.cancelled
+    assert not window._cancelling
+    assert window.status.text() != tr("cancelling")
+
+
+def test_language_change_updates_the_live_status_mid_translation(window):
+    class FakeWorker:
+        files = ["/a/doc.txt"]
+        cancelled = False
+
+        def isRunning(self):
+            return not self.cancelled
+
+        def cancel(self):
+            self.cancelled = True
 
     window.worker = FakeWorker()
 
@@ -421,6 +565,87 @@ def test_output_dir_choose_and_reset(window, tmp_path):
     assert window.output_label.text() == tr("output_default")
 
 
+def test_output_dir_is_restored_between_windows(qtbot, langs, tmp_path):
+    win = MainWindow()
+    qtbot.addWidget(win)
+    win.output_dir = str(tmp_path)
+    win.close()
+
+    win2 = MainWindow()
+    qtbot.addWidget(win2)
+    assert win2.output_dir == str(tmp_path)
+    assert win2.output_label.text() == str(tmp_path)
+    assert win2.open_out_btn.isEnabled()
+
+
+def test_missing_output_dir_is_not_restored(qtbot, langs, tmp_path):
+    from PyQt5.QtCore import QSettings
+
+    QSettings().setValue("output_dir", str(tmp_path / "gone"))
+    win = MainWindow()
+    qtbot.addWidget(win)
+    assert win.output_dir is None  # a deleted folder falls back to the default
+    assert win.output_label.text() == tr("output_default")
+
+
+def test_open_output_dir_opens_only_a_chosen_folder(window, monkeypatch, tmp_path):
+    opened = []
+    monkeypatch.setattr(
+        argonaut.window.QDesktopServices,
+        "openUrl",
+        staticmethod(lambda url: opened.append(url.toLocalFile())),
+    )
+    window.open_output_dir()  # no folder chosen: nothing to open
+    assert opened == []
+    window.output_dir = str(tmp_path)
+    window.open_output_dir()
+    assert opened == [str(tmp_path)]
+
+
+def test_drag_and_drop_adds_local_files(window, tmp_path):
+    from PyQt5.QtCore import QMimeData, QPoint, QUrl, Qt
+    from PyQt5.QtGui import QDragEnterEvent, QDropEvent
+
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(doc))])
+
+    enter = QDragEnterEvent(
+        QPoint(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier
+    )
+    window.dragEnterEvent(enter)
+    assert enter.isAccepted()
+
+    drop = QDropEvent(
+        QPoint(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier
+    )
+    window.dropEvent(drop)
+    assert window.paths() == [str(doc)]
+
+
+def test_each_translation_releases_the_previous_worker(window, qtbot, tmp_path):
+    """Worker threads are children of the window: keeping every finished one
+    would pile up a file list and a batch cache per translation, for as long
+    as the session lasts."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("hello world")
+    window.add_paths([str(doc)])
+    window.from_combo.setCurrentIndex(1)  # English
+    window.to_combo.setCurrentIndex(1)  # Spanish
+
+    window.start_translation()
+    first = window.worker
+    qtbot.waitUntil(lambda: not first.isRunning(), timeout=5000)
+
+    window.start_translation()
+    assert window.worker is not first
+    qtbot.waitUntil(
+        lambda: len(window.findChildren(TranslateWorker)) == 1, timeout=5000
+    )
+    qtbot.waitUntil(lambda: not window.worker.isRunning(), timeout=5000)
+
+
 def test_translation_requires_files(window, monkeypatch):
     boxes = []
     monkeypatch.setattr(
@@ -450,6 +675,60 @@ def test_translation_rejects_missing_model(window, monkeypatch):
     window.start_translation()
     assert len(boxes) == 1
     assert "Spanish" in boxes[0] and "English" in boxes[0]
+
+
+def test_late_signals_are_ignored_while_cancelling(window):
+    class FakeWorker:
+        files = ["/a/doc.txt"]
+
+        def isRunning(self):
+            return True
+
+        def cancel(self):
+            pass
+
+    window.worker = FakeWorker()
+    window.cancel_translation()
+    before = window.status.text()
+    # signals already queued when the user cancelled must not overwrite
+    # the "cancelling…" message
+    window.on_file_started(0, "/a/doc.txt")
+    window.on_phase_changed("generating", {"name": "doc.txt", "done": 1, "total": 2})
+    assert window.status.text() == before
+
+
+def test_finished_file_notes_its_detected_language(window):
+    class FakeWorker:
+        files = ["/a/doc.txt"]
+
+        def isRunning(self):
+            return False
+
+    window.worker = FakeWorker()
+    window.results = []
+    window.detected = {}
+    window.add_paths(["/a/doc.txt"])
+    window.on_language_detected(0, "English")
+    window.on_file_done(0, "/a/doc_es.txt", 2.0)
+    kind, text = window.results[-1]
+    assert kind == "ok"
+    assert "/a/doc_es.txt" in text
+    assert tr("detected", name="English") in text
+
+
+def test_failed_file_lands_in_the_results_and_the_status_column(window):
+    class FakeWorker:
+        files = ["/a/doc.txt"]
+
+        def isRunning(self):
+            return False
+
+    window.worker = FakeWorker()
+    window.results = []
+    window.add_paths(["/a/doc.txt"])
+    window.on_file_failed(0, "boom")
+    assert window.results == [("error", "boom")]
+    assert window._item_for_path("/a/doc.txt").text(STATUS_COL) == tr("status_failed")
 
 
 def test_finished_summary_lists_results_and_errors(window):
@@ -600,7 +879,7 @@ def test_backend_switch_and_persistence(qtbot, langs, monkeypatch):
     monkeypatch.setattr(
         argonaut.window.nllb,
         "get_installed_languages",
-        lambda path=None, threads=None: fake_langs,
+        lambda path=None, threads=None, beam_size=None: fake_langs,
     )
 
     win = MainWindow()
@@ -629,7 +908,7 @@ def test_backend_switch_keeps_language_selection(window, monkeypatch):
     monkeypatch.setattr(
         argonaut.window.nllb,
         "get_installed_languages",
-        lambda path=None, threads=None: [
+        lambda path=None, threads=None, beam_size=None: [
             FakeLanguage("en", "English"),
             FakeLanguage("es", "Spanish"),
         ],
@@ -680,7 +959,7 @@ def test_backend_download_flow(window, monkeypatch, qtbot):
     monkeypatch.setattr(
         argonaut.window.nllb,
         "get_installed_languages",
-        lambda path=None, threads=None: [
+        lambda path=None, threads=None, beam_size=None: [
             FakeLanguage("en", "English"),
             FakeLanguage("es", "Spanish"),
         ],
@@ -693,6 +972,163 @@ def test_backend_download_flow(window, monkeypatch, qtbot):
     assert window.to_combo.currentText() == "Spanish"
 
 
+def test_ready_state_is_left_alone_while_a_worker_runs(window):
+    class RunningWorker:
+        def isRunning(self):
+            return True
+
+        def cancel(self):
+            pass
+
+    window.worker = RunningWorker()
+    window.set_busy(True)
+    window._refresh_ready_state()  # e.g. packages changed mid-translation
+    assert not window.translate_btn.isEnabled()  # the busy state stays owner
+    window.worker = None  # let the teardown close a worker-free window
+
+
+def test_same_backend_choice_is_a_no_op(window, monkeypatch):
+    applied = []
+    monkeypatch.setattr(window, "apply_backend", lambda name: applied.append(name))
+    window.change_backend("argos")  # already active
+    assert applied == []
+
+
+def test_same_cpu_thread_count_is_a_no_op(window, monkeypatch):
+    reloaded = []
+    monkeypatch.setattr(
+        window, "reload_language_combos", lambda: reloaded.append(True)
+    )
+    window.change_cpu_threads(window.cpu_threads)
+    assert reloaded == []  # no pointless engine reload
+
+
+def test_cancel_button_cancels_a_running_model_download(window):
+    class FakeDownloader:
+        cancelled = False
+
+        def isRunning(self):
+            return True
+
+        def cancel(self):
+            self.cancelled = True
+
+    window.downloader = FakeDownloader()
+    window.cancel_translation()
+    assert window.downloader.cancelled
+    assert not window.cancel_btn.isEnabled()
+    assert window.status.text() == tr("cancelling")
+
+
+def test_model_download_failure_warns_and_keeps_argos(window, monkeypatch):
+    warned = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *args: warned.append(args[2]))
+    )
+    window.on_download_finished(False, "boom")
+    assert window.backend == "argos"
+    assert window.argos_action.isChecked()
+    assert warned == [tr("download_failed", error="boom")]
+
+
+def test_model_download_progress_shows_the_speed(window):
+    window.on_download_progress(2, 4, 2 * 2**20)
+    assert window.progress.format() == "%p% — 2/4 MB — 16.8 Mbps"
+    # while the speed is still unknown the label shows only the size
+    window.on_download_progress(3, 4, 0.0)
+    assert window.progress.format() == "%p% — 3/4 MB"
+
+
+def test_speed_units_menu_defaults_to_bits_and_applies(window):
+    from PyQt5.QtCore import QSettings
+
+    actions = window.speed_menu.actions()
+    assert window.speed_menu.title() == tr("menu_speed_units")
+    assert [a.text() for a in actions] == [
+        tr("speed_units_bits"), tr("speed_units_bytes")
+    ]
+    assert [a.isChecked() for a in actions] == [True, False]
+
+    window.change_speed_units("bytes")
+    assert QSettings().value("speed_units") == "bytes"
+    window.on_download_progress(2, 4, 2 * 2**20)
+    assert window.progress.format() == "%p% — 2/4 MB — 2.0 MB/s"
+
+    window.change_speed_units("bits")
+    window.on_download_progress(2, 4, 2 * 2**20)
+    assert window.progress.format() == "%p% — 2/4 MB — 16.8 Mbps"
+
+
+def test_new_model_download_releases_the_finished_downloader(window, monkeypatch, qtbot):
+    from argonaut.translation import CancelledError
+
+    def cancelled_download(path=None, base_url=None, on_progress=None,
+                           is_cancelled=None):
+        raise CancelledError()
+
+    monkeypatch.setattr(argonaut.window.nllb, "download_model", cancelled_download)
+    window.start_model_download()
+    first = window.downloader
+    qtbot.waitUntil(lambda: not first.isRunning(), timeout=5000)
+    qtbot.waitUntil(lambda: not window.cancel_btn.isVisible(), timeout=5000)
+    assert window.status.text() == tr("cancelled")
+
+    # a second download replaces the finished thread instead of piling up
+    window.start_model_download()
+    assert window.downloader is not first
+    qtbot.waitUntil(lambda: not window.downloader.isRunning(), timeout=5000)
+    qtbot.waitUntil(lambda: not window.cancel_btn.isVisible(), timeout=5000)
+
+
+def test_package_dialog_opens_and_refreshes_on_changes(window, monkeypatch):
+    from PyQt5.QtCore import QObject, pyqtSignal
+
+    class FakeDialog(QObject):
+        packages_changed = pyqtSignal()
+        instances = []
+
+        def __init__(self, parent=None):
+            super().__init__()
+            FakeDialog.instances.append(self)
+
+        def exec_(self):
+            self.packages_changed.emit()  # as if the user installed something
+
+    # patched in the module that instantiates it (show_package_dialog)
+    monkeypatch.setattr(argonaut.window.engine, "PackageDialog", FakeDialog)
+    refreshed = []
+    monkeypatch.setattr(window, "on_packages_changed", lambda: refreshed.append(True))
+    window.show_package_dialog()
+    assert len(FakeDialog.instances) == 1
+    assert refreshed == [True]
+
+
+def test_clear_cache_declined_leaves_the_cache_alone(window, monkeypatch):
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No)
+    )
+    purged = []
+    monkeypatch.setattr(
+        argonaut.window.TranslationCache, "purge_db",
+        staticmethod(lambda path: purged.append(path)),
+    )
+    window.clear_cache()
+    assert purged == []
+
+
+def test_about_opens_the_dialog_with_the_window_state(window, monkeypatch):
+    from argonaut.window.about_dialog import AboutDialog
+
+    opened = []
+    monkeypatch.setattr(AboutDialog, "exec_", lambda self: opened.append(self))
+    window.show_about()
+    assert len(opened) == 1
+    dialog = opened[0]
+    assert ".pdf" in dialog.about_label.text()
+    # the report reflects the running window: its engine and languages
+    assert "Engine: Argos Translate · Languages: 2" in dialog.report.toPlainText()
+
+
 def test_engine_label_shows_active_backend(window, monkeypatch):
     assert window.engine_label.text() == tr("engine_status", name="Argos Translate")
     monkeypatch.setattr(
@@ -701,7 +1137,7 @@ def test_engine_label_shows_active_backend(window, monkeypatch):
     monkeypatch.setattr(
         argonaut.window.nllb,
         "get_installed_languages",
-        lambda path=None, threads=None: [
+        lambda path=None, threads=None, beam_size=None: [
             FakeLanguage("en", "English"),
             FakeLanguage("es", "Spanish"),
         ],
@@ -721,7 +1157,7 @@ def test_remove_nllb_model(window, monkeypatch):
     monkeypatch.setattr(
         argonaut.window.nllb,
         "get_installed_languages",
-        lambda path=None, threads=None: [
+        lambda path=None, threads=None, beam_size=None: [
             FakeLanguage("en", "English"),
             FakeLanguage("es", "Spanish"),
         ],
@@ -783,6 +1219,63 @@ def test_settings_menu_groups_engine_and_threads(window):
     window.change_language("en")
 
 
+def test_theme_menu_defaults_to_system_and_is_translated(window):
+    from argonaut.window.theme import current_theme
+
+    assert current_theme() == "system"
+    actions = window.theme_menu.actions()
+    assert [a.text() for a in actions] == [
+        tr("theme_system"), tr("theme_light"), tr("theme_dark")
+    ]
+    assert [a.isChecked() for a in actions] == [True, False, False]
+
+    window.change_language("es")
+    assert window.theme_menu.title() == "&Tema"
+    assert [a.text() for a in actions] == ["Sistema", "Claro", "Oscuro"]
+    window.change_language("en")
+
+
+def test_theme_switches_apply_and_persist(window, qtbot, langs):
+    from PyQt5.QtCore import QSettings
+    from PyQt5.QtGui import QPalette
+    from PyQt5.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    system_window_color = app.palette().color(QPalette.Window)
+
+    window.change_theme("dark")
+    assert QSettings().value("theme") == "dark"
+    assert app.style().objectName().lower() == "fusion"
+    dark = app.palette().color(QPalette.Window)
+    assert dark.lightness() < 128  # a dark background
+
+    # a new window applies the saved theme on startup
+    win2 = MainWindow()
+    qtbot.addWidget(win2)
+    assert app.palette().color(QPalette.Window) == dark
+
+    win2.change_theme("light")
+    assert app.palette().color(QPalette.Window).lightness() > 128
+
+    # "system" restores what the desktop had before any override
+    win2.change_theme("system")
+    assert app.palette().color(QPalette.Window) == system_window_color
+
+
+def test_unknown_saved_theme_falls_back_to_system(qtbot, langs):
+    from PyQt5.QtCore import QSettings
+    from PyQt5.QtGui import QPalette
+    from PyQt5.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    system_window_color = app.palette().color(QPalette.Window)
+    QSettings().setValue("theme", "solarized")  # e.g. from a newer version
+    win = MainWindow()
+    qtbot.addWidget(win)
+    assert app.palette().color(QPalette.Window) == system_window_color
+    assert win.theme_menu.actions()[0].isChecked()  # system marked active
+
+
 def test_package_menu_action_is_translated(window):
     assert window.pkg_install_action.text() == tr("pkg_install")
     window.change_language("es")
@@ -812,12 +1305,58 @@ def test_installed_packages_refresh_the_window(qtbot, monkeypatch):
     assert win.status.text() == tr("ready")
 
 
+def test_quality_mode_default_and_menu(window):
+    from argonaut.window.engine import ARGOS_DEFAULT_BEAM
+    from argonaut.worker import quality_mode
+
+    assert quality_mode() == "quality"
+    assert argonaut.window.argostranslate.settings.beam_size == ARGOS_DEFAULT_BEAM
+    actions = window.quality_menu.actions()
+    assert len(actions) == 2
+    assert actions[0].isChecked()  # "quality" is the default
+    window.change_language("es")
+    assert window.quality_menu.title() == "Calidad de traducción"
+    assert actions[1].text() == "Rápida (calidad algo menor)"
+    window.change_language("en")
+
+
+def test_quality_mode_change_applies_and_persists(qtbot, langs, monkeypatch):
+    from argonaut import nllb
+    from argonaut.window.engine import ARGOS_DEFAULT_BEAM
+
+    captured = []
+    monkeypatch.setattr(
+        argonaut.window.nllb,
+        "get_installed_languages",
+        lambda path=None, threads=None, beam_size=None: captured.append(beam_size) or [],
+    )
+    win = MainWindow()
+    qtbot.addWidget(win)
+    win.change_quality_mode("quality")  # already active: nothing to change
+    win.change_quality_mode("fast")
+    assert argonaut.window.argostranslate.settings.beam_size == 1
+    win.close()
+
+    win2 = MainWindow()
+    qtbot.addWidget(win2)
+    assert win2.quality_actions[1].isChecked()  # persisted across sessions
+    assert argonaut.window.argostranslate.settings.beam_size == 1  # at startup
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: True
+    )
+    win2.change_backend("nllb")
+    assert captured[-1] == 1  # the NLLB engine goes greedy too
+    win2.change_quality_mode("quality")
+    assert argonaut.window.argostranslate.settings.beam_size == ARGOS_DEFAULT_BEAM
+    assert captured[-1] == nllb.NllbEngine.DEFAULT_BEAM
+
+
 def test_cpu_threads_default_and_menu(window):
     import os
 
     max_threads = os.cpu_count() or 1
     assert window.max_threads == max_threads
-    assert window.cpu_threads == min(4, max_threads)
+    assert window.cpu_threads == max_threads  # every core, unless overridden
     assert argonaut.window.argostranslate.settings.intra_threads == window.cpu_threads
     actions = window.threads_menu.actions()
     assert [a.text() for a in actions] == [str(n) for n in range(1, max_threads + 1)]
@@ -832,7 +1371,7 @@ def test_cpu_threads_change_applies_and_persists(qtbot, langs, monkeypatch):
     monkeypatch.setattr(
         argonaut.window.nllb,
         "get_installed_languages",
-        lambda path=None, threads=None: captured.append(threads) or [],
+        lambda path=None, threads=None, beam_size=None: captured.append(threads) or [],
     )
     win = MainWindow()
     qtbot.addWidget(win)
