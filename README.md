@@ -151,11 +151,27 @@ the **Language** menu you can switch to Spanish, French, German, Italian,
 Portuguese, Russian, Chinese, Japanese, Dutch, Polish or Turkish; the
 change applies instantly and *that* is what gets saved (QSettings). Until
 you choose one, the desktop keeps deciding — so changing the system
-language changes Argonaut's too. To add a language
-just add its dictionary in `i18n.py` and list it in `LANGUAGES` (missing
-keys fall back to English). The test suite checks that every language
-carries the same keys, the same `{placeholders}` and no duplicate
-keyboard accelerators within a menu.
+language changes Argonaut's too.
+
+The strings are JSON, one file per language in
+`src/argonaut/locales/<code>.json`, read only when that language is
+actually used. To add a language, copy `en.json`, translate the values and
+list the code in `LANGUAGES` in `i18n.py` (the menu order and the name
+shown for it); missing keys fall back to English. The test suite checks
+that the menu and the shipped files agree, and that every language carries
+the same keys, the same `{placeholders}` and no duplicate keyboard
+accelerators within a menu.
+
+The languages you translate *between* are named in that same interface
+language: French reads "Francés" in Spanish and "フランス語" in Japanese,
+in the source and target combos, in the package dialog and in the progress
+and error messages — each list ordered alphabetically by the name shown.
+Those names are the one generated file in that folder,
+`locales/language_names.json`, built from CLDR by
+`tools/gen_language_names.py` (`pip install babel && python
+tools/gen_language_names.py`); Babel is a development tool, not a runtime
+dependency. A language with no entry keeps the English name the engine
+reports.
 
 The **Help** menu opens the **user manual** (this README, on GitHub) and
 **Report a bug…**, which goes straight to the issue tracker. Both open in
@@ -203,9 +219,13 @@ All modules live in the `src/argonaut/` package:
 - `download.py` — shared streaming download with progress and cancellation.
 - `packages.py` — Argos package index, download, installation and removal.
 - `package_dialog.py` — dialog to browse, install and remove packages.
-- `i18n.py` — interface languages (English by default, Spanish, French,
-  German, Italian, Portuguese, Russian, Chinese, Japanese, Dutch, Polish
-  and Turkish).
+- `i18n.py` — interface language: which one is in force, how it is chosen
+  and saved, and lazy access to the data files below.
+- `locales/<code>.json` — the interface strings (English by default,
+  Spanish, French, German, Italian, Portuguese, Russian, Chinese,
+  Japanese, Dutch, Polish and Turkish).
+- `locales/language_names.json` — the translation languages' names in each of
+  those interface languages (generated; see `tools/gen_language_names.py`).
 
 Packaging lives at the top level: `pyproject.toml` (PyPI),
 `io.github.nibblex.Argonaut.yml` (Flatpak manifest) and `data/`

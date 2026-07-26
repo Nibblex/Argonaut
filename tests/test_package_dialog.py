@@ -4,7 +4,7 @@ import pytest
 from PyQt5.QtCore import Qt
 
 from argonaut import packages
-from argonaut.i18n import tr
+from argonaut.i18n import set_language, tr
 from argonaut.package_dialog import SIZE_ROLE, PackageDialog
 
 
@@ -107,6 +107,34 @@ def test_filter_hides_non_matching_packages(dialog):
     assert dialog.package_list.item(1).isHidden()
     dialog.filter_edit.setText("")
     assert not dialog.package_list.item(1).isHidden()
+
+
+@pytest.fixture
+def spanish_dialog(qtbot, monkeypatch, installed):
+    """The same dialog, opened with the interface in Spanish."""
+    set_language("es")
+    monkeypatch.setattr(packages, "get_available", lambda: [EN_ES, EN_FR, EN_DE])
+    dlg = PackageDialog()
+    qtbot.addWidget(dlg)
+    qtbot.waitUntil(lambda: dlg.package_list.count() == 3, timeout=5000)
+    qtbot.waitUntil(lambda: not dlg.lister.isRunning(), timeout=5000)
+    return dlg
+
+
+def test_pairs_are_named_in_the_interface_language(spanish_dialog):
+    assert [
+        item.text().split("  ·  ")[0] for item in spanish_dialog.all_items()
+    ] == ["Inglés → Español", "Inglés → Francés", "Inglés → Alemán"]
+
+
+def test_filter_still_matches_the_english_name_and_the_code(spanish_dialog):
+    """The list reads in the user's language, but the English names and the
+    codes are what package documentation and translated file names use."""
+    for text in ("alemán", "german", "de"):
+        spanish_dialog.filter_edit.setText(text)
+        assert [
+            item.isHidden() for item in spanish_dialog.all_items()
+        ] == [True, True, False], text
 
 
 def test_install_flow_installs_checked_packages(dialog, qtbot, monkeypatch, installed):

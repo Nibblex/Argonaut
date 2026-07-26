@@ -8,10 +8,16 @@ from argonaut.i18n import (
     LANGUAGES,
     STRINGS,
     current_language,
+    lang_text,
+    language_name,
+    language_names,
     load_language,
+    name_sort_key,
     set_language,
+    sorted_languages,
     tr,
 )
+from tests.conftest import FakeLanguage
 
 
 def test_default_language_is_english():
@@ -45,8 +51,25 @@ def test_unknown_key_returns_the_key():
     assert tr("nonexistent_key") == "nonexistent_key"
 
 
-def test_menu_lists_every_translated_language():
-    assert [code for code, _ in LANGUAGES] == sorted(STRINGS, key=lambda c: c != "en")
+def test_menu_lists_every_language_shipped():
+    """STRINGS reports the locale files that are actually there, so this
+    catches both a menu entry with no strings behind it and a translation
+    that was added without being offered."""
+    assert sorted(code for code, _ in LANGUAGES) == sorted(STRINGS)
+
+
+def test_strings_are_read_only_when_their_language_is_used():
+    fresh = type(STRINGS)()
+    assert "es" in fresh and not fresh._loaded  # knowing it exists reads nothing
+    fresh["es"]
+    assert set(fresh._loaded) == {"es"}
+
+
+def test_a_language_with_no_locale_file_is_a_missing_key():
+    """Asked for a language it does not ship, STRINGS raises rather than
+    going looking for a file that is not there."""
+    with pytest.raises(KeyError):
+        STRINGS["xx"]
 
 
 @pytest.mark.parametrize("code", [code for code, _ in LANGUAGES])
@@ -97,6 +120,80 @@ def test_menu_accelerators_are_present_and_unique(code, group, keys):
     assert len(set(letters)) == len(letters), (
         f"{code} {group}: duplicate accelerator in {dict(zip(keys, letters))}"
     )
+
+
+# --- names of the translation languages ---
+
+def test_language_names_follow_the_interface_language():
+    set_language("es")
+    assert language_name("fr", "French") == "Francés"
+    set_language("ja")
+    assert language_name("fr", "French") == "フランス語"
+
+
+def test_language_names_stay_english_in_english():
+    assert current_language() == "en"
+    assert language_name("fr", "French") == "French"
+
+
+def test_an_unknown_code_keeps_the_engine_name():
+    """A language the engines add later must still read as it always did
+    rather than turning into its bare code."""
+    set_language("es")
+    assert language_name("xx", "Klingon") == "Klingon"
+
+
+def test_lang_text_reads_the_language_object():
+    set_language("de")
+    assert lang_text(FakeLanguage("pt", "Portuguese")) == "Portugiesisch"
+
+
+def test_argos_only_codes_are_covered():
+    """Argos names Brazilian Portuguese "pb" and traditional Chinese "zt",
+    and NLLB says "no" where Argos says "nb": none of them is ISO 639-1,
+    so nothing but the table can name them."""
+    set_language("es")
+    assert language_name("pb", "Portuguese (Brazil)") == "Portugués (Brasil)"
+    assert language_name("zt", "Chinese (traditional)") == "Chino (tradicional)"
+    assert language_name("nb", "Norwegian") == language_name("no", "Norwegian")
+
+
+@pytest.mark.parametrize("code", [code for code, _ in LANGUAGES if code != DEFAULT])
+def test_every_interface_language_names_the_same_languages(code):
+    assert set(language_names()[code]) == set(language_names()["es"])
+
+
+def test_english_has_no_table():
+    """It would only repeat what the engines already report in English."""
+    assert DEFAULT not in language_names()
+
+
+def test_every_nllb_language_has_a_name():
+    from argonaut import nllb
+
+    missing = {code for code, _, _ in nllb.LANGUAGES} - set(language_names()["es"])
+    assert not missing
+
+
+def test_languages_sort_by_their_translated_name():
+    langs = [
+        FakeLanguage("de", "German"),
+        FakeLanguage("en", "English"),
+        FakeLanguage("es", "Spanish"),
+    ]
+    assert [str(lang) for lang in sorted_languages(langs)] == [
+        "English", "German", "Spanish",
+    ]
+    set_language("es")
+    # Alemán, Español, Inglés — the English order would be German first
+    assert [str(lang) for lang in sorted_languages(langs)] == [
+        "German", "Spanish", "English",
+    ]
+
+
+def test_accents_sort_with_their_base_letter():
+    assert name_sort_key("Árabe") < name_sort_key("Bengalí")
+    assert name_sort_key("Árabe") == "arabe"
 
 
 # --- picking the language at startup ---

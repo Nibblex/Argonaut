@@ -27,7 +27,14 @@ from PyQt5.QtWidgets import (
 import argostranslate.settings
 
 from argonaut import nllb
-from argonaut.i18n import LANGUAGES, current_language, set_language, tr
+from argonaut.i18n import (
+    LANGUAGES,
+    current_language,
+    lang_text,
+    set_language,
+    sorted_languages,
+    tr,
+)
 from argonaut.translation import SUPPORTED_EXTS
 from argonaut.window.about_dialog import ISSUES_URL, MANUAL_URL, AboutDialog
 from argonaut.window.engine import EngineMixin
@@ -235,9 +242,9 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
         self.from_combo = QComboBox()
         self.to_combo = QComboBox()
         self.from_combo.addItem("", None)  # "Detect language" (text set in retranslate)
-        for lang in self.languages:
-            self.from_combo.addItem(str(lang), lang)
-            self.to_combo.addItem(str(lang), lang)
+        for lang in sorted_languages(self.languages):
+            self.from_combo.addItem(lang_text(lang), lang)
+            self.to_combo.addItem(lang_text(lang), lang)
 
         self.swap_btn = QToolButton()
         self.swap_btn.setText("⇄")
@@ -509,7 +516,9 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
         self.manual_action.setText(tr("help_manual"))
         self.report_action.setText(tr("help_report"))
         self.about_action.setText(tr("about"))
-        self.from_combo.setItemText(0, tr("detect_language"))
+        # the language names are translated too, so the combos are rebuilt
+        # rather than just relabelled: the alphabetical order is another
+        self.reload_language_combos()
         self.swap_btn.setToolTip(tr("swap_tooltip"))
         self.file_list.setHeaderLabels([tr(key) for key in COLUMN_KEYS])
         for i in range(self.file_list.topLevelItemCount()):

@@ -7,7 +7,7 @@ import time
 
 from PyQt5.QtWidgets import QMessageBox
 
-from argonaut.i18n import tr
+from argonaut.i18n import lang_text, tr
 from argonaut.window.file_list import FILE_REUSED_ROLE, FILE_STATE_ROLE, STATUS_COL
 from argonaut.worker import TranslateWorker
 
@@ -51,7 +51,7 @@ class TranslationRunMixin:
                 QMessageBox.warning(
                     self,
                     tr("no_model_title"),
-                    tr("no_model_msg", src=src, dst=dst),
+                    tr("no_model_msg", src=lang_text(src), dst=lang_text(dst)),
                 )
                 return
 

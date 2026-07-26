@@ -3,7 +3,7 @@ import types
 import pytest
 
 from argonaut import nllb, packages
-from argonaut.i18n import tr
+from argonaut.i18n import set_language, tr
 from argonaut.translation import CancelledError
 from argonaut.worker import (
     MegabyteProgress,
@@ -71,6 +71,23 @@ def test_resolve_translation_detects_language(qapp, tmp_path):
     translation = worker.resolve_translation(0, str(doc))
     assert translation is english._translations["es"]
     assert detected == [(0, "English")]
+
+
+def test_language_names_in_messages_follow_the_interface(qapp, tmp_path):
+    english, spanish = make_langs()
+    doc = tmp_path / "doc.txt"
+    doc.write_text(ENGLISH_TEXT)
+    set_language("es")
+
+    detected = []
+    worker = make_worker([str(doc)], None, spanish, languages=[english, spanish])
+    worker.language_detected.connect(lambda i, name: detected.append(name))
+    worker.resolve_translation(0, str(doc))
+    assert detected == ["Inglés"]
+
+    worker = make_worker([str(doc)], spanish, english)  # no es->en model
+    with pytest.raises(RuntimeError, match="Español → Inglés"):
+        worker.resolve_translation(0, str(doc))
 
 
 def test_run_translates_files(qapp, tmp_path):

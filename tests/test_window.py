@@ -557,6 +557,31 @@ def test_change_language_retranslates_ui(window):
     assert window.translate_btn.text() == "Translate"
 
 
+def test_language_combos_follow_the_interface_language(window):
+    assert window.from_combo.itemText(1) == "English"
+    window.change_language("es")
+    assert window.from_combo.itemText(0) == "Detectar idioma"
+    assert [
+        window.to_combo.itemText(i) for i in range(window.to_combo.count())
+    ] == ["Español", "Inglés"]  # translated, and alphabetical in Spanish
+    window.change_language("en")
+    assert [
+        window.to_combo.itemText(i) for i in range(window.to_combo.count())
+    ] == ["English", "Spanish"]
+
+
+def test_the_chosen_pair_survives_a_language_change(window):
+    """The combos are rebuilt to retranslate them, so what the user picked
+    has to be found again — by code, since the name has just changed."""
+    window.from_combo.setCurrentIndex(1)  # English
+    window.to_combo.setCurrentIndex(1)  # Spanish
+    window.change_language("es")
+    assert window.from_combo.currentText() == "Inglés"
+    assert window.to_combo.currentText() == "Español"
+    assert window.from_combo.currentData().code == "en"
+    assert window.to_combo.currentData().code == "es"
+
+
 def test_output_dir_choose_and_reset(window, tmp_path):
     window.output_dir = str(tmp_path)
     window.output_label.setText(str(tmp_path))

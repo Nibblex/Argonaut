@@ -10,7 +10,7 @@ import argostranslate.translate
 
 from argonaut import nllb
 from argonaut.history import TranslationHistory
-from argonaut.i18n import tr
+from argonaut.i18n import lang_text, sorted_languages, tr
 from argonaut.package_dialog import PackageDialog
 from argonaut.translation import TranslationCache
 from argonaut.window.file_list import human_size
@@ -251,15 +251,17 @@ class EngineMixin:
     # --- language combos ---
     def reload_language_combos(self):
         """Repopulates both combos with the current backend's languages,
-        keeping the selection when the language exists in both."""
+        keeping the selection when the language exists in both. Also how
+        the combos follow a change of interface language: the names, and
+        with them the order, are those of the language now in force."""
         src = self.from_combo.currentData()
         dst = self.to_combo.currentData()
         self.from_combo.clear()
         self.to_combo.clear()
         self.from_combo.addItem(tr("detect_language"), None)
-        for lang in self.languages:
-            self.from_combo.addItem(str(lang), lang)
-            self.to_combo.addItem(str(lang), lang)
+        for lang in sorted_languages(self.languages):
+            self.from_combo.addItem(lang_text(lang), lang)
+            self.to_combo.addItem(lang_text(lang), lang)
         self.select_defaults()
         if src is not None:
             self._select_language(self.from_combo, src.code, first=1)
@@ -275,9 +277,7 @@ class EngineMixin:
 
     def select_defaults(self):
         self.from_combo.setCurrentIndex(0)  # Detect language
-        names = [self.to_combo.itemText(i) for i in range(self.to_combo.count())]
-        if "Spanish" in names:
-            self.to_combo.setCurrentIndex(names.index("Spanish"))
+        self._select_language(self.to_combo, "es", first=0)
 
     def swap_languages(self):
         # the source combo has "Detect language" at index 0

@@ -159,7 +159,7 @@ class PackageDialog(QDialog):
 
     def refresh_item_text(self, item):
         pkg = item.data(PACKAGE_ROLE)
-        text = f"{pkg.from_name} → {pkg.to_name}"
+        text = packages.pair_text(pkg)
         size = item.data(SIZE_ROLE)
         if size:
             text += f"  ·  {mb_text(size)}"
@@ -194,15 +194,21 @@ class PackageDialog(QDialog):
         text = self.filter_edit.text().strip().lower()
         wanted = self.state_combo.currentData()
         for item in self.all_items():
+            pkg = item.data(PACKAGE_ROLE)
             state = item.data(STATE_ROLE)
             matches_state = (
                 wanted == "all"
                 or state == wanted
                 or (wanted == "installed" and state == "outdated")
             )
+            # the English names are searched alongside the shown text, so a
+            # translated list still answers to "german" and to its codes
+            haystack = (
+                f"{item.text()} {pkg.from_name} {pkg.to_name} "
+                f"{pkg.from_code} {pkg.to_code}"
+            ).lower()
             item.setHidden(
-                (bool(text) and text not in item.text().lower())
-                or not matches_state
+                (bool(text) and text not in haystack) or not matches_state
             )
         # a hidden package is not part of the selection, so the summary and
         # the buttons must be recomputed whenever the visible set changes
@@ -364,7 +370,7 @@ class PackageDialog(QDialog):
             try:
                 packages.uninstall(packages.pair(pkg))
             except Exception as exc:  # noqa: BLE001
-                errors.append(f"{pkg.from_name} → {pkg.to_name}: {exc}")
+                errors.append(f"{packages.pair_text(pkg)}: {exc}")
             else:
                 removed += 1
 

@@ -8,7 +8,7 @@ from argostranslatefiles import argostranslatefiles
 
 from argonaut import nllb, packages
 from argonaut.history import TranslationHistory
-from argonaut.i18n import tr
+from argonaut.i18n import lang_text, tr
 from argonaut.pdf import FastPdfTranslator
 from argonaut.translation import (
     CancelledError,
@@ -177,7 +177,7 @@ class PackageInstallWorker(CancellableThread):
                 break
             self._report.reset()  # each package has its own byte count
             self.package_started.emit(
-                i, len(self.to_install), f"{pkg.from_name} → {pkg.to_name}"
+                i, len(self.to_install), packages.pair_text(pkg)
             )
             try:
                 packages.install(
@@ -186,7 +186,7 @@ class PackageInstallWorker(CancellableThread):
             except CancelledError:
                 break
             except Exception as exc:  # noqa: BLE001
-                self.package_failed.emit(f"{pkg.from_name} → {pkg.to_name}", str(exc))
+                self.package_failed.emit(packages.pair_text(pkg), str(exc))
             else:
                 installed += 1
         self.install_finished.emit(installed)
@@ -269,13 +269,20 @@ class TranslateWorker(CancellableThread):
             src = detect_language(path, self.languages)
             if src is None:
                 raise RuntimeError(tr("err_detect", name=name))
-            self.language_detected.emit(index, str(src))
+            self.language_detected.emit(index, lang_text(src))
         if src is self.dst_lang:
-            raise RuntimeError(tr("err_already", name=name, lang=self.dst_lang))
+            raise RuntimeError(
+                tr("err_already", name=name, lang=lang_text(self.dst_lang))
+            )
         translation = src.get_translation(self.dst_lang)
         if translation is None:
             raise RuntimeError(
-                tr("err_no_model", name=name, src=src, dst=self.dst_lang)
+                tr(
+                    "err_no_model",
+                    name=name,
+                    src=lang_text(src),
+                    dst=lang_text(self.dst_lang),
+                )
             )
         return translation
 
