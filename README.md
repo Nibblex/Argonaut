@@ -103,6 +103,7 @@ between sessions.
 - **Download speed units** — network units (`16.8 Mbps`) or the bytes a
   download manager shows (`2.0 MB/s`).
 - **Cache** — see below.
+- **History** — see below.
 - **Manage language packages…** — the Argos package dialog.
 - **Delete the NLLB-200 model…** — frees the ~630 MB the model occupies.
 
@@ -121,6 +122,24 @@ upgrading a language package stops serving the old model's output. From
 are kept (never, 30 days, 90 days — the default — or a year; expired
 ones are pruned when a translation starts), see the database's size and
 entry count, and clear it.
+
+### Translation history
+
+Every file a batch finishes is recorded — what was translated, into which
+language, where the result was written, with which engine and how long it
+took. *Settings → History → View history…* lists them newest first;
+double-clicking a row (or the "Open translation" button) opens the
+translated file, and rows whose output has since been moved or deleted
+stay listed, greyed out, since the history is a record of what happened
+rather than a file browser.
+
+Like the cache, it lives in its own sqlite database
+(`~/.local/share/argonaut/history.db`) and the same submenu lets you stop
+recording, choose how long entries are kept (never, 30 days, 90 days —
+the default — or a year), see its size and entry count, and clear it.
+Viewing and clearing keep working while recording is off, and only
+successful translations are recorded: a file that failed is not history,
+it is an error.
 
 ## Interface language
 
@@ -156,14 +175,16 @@ All modules live in the `src/argonaut/` package:
   the window.
 - `window/` — the main window, split by responsibility:
   `main_window.py` (widgets, menus and window state), `engine.py`
-  (backend, threads, quality, cache menu and the NLLB model),
-  `files.py` and `file_list.py` (the file list and its columns),
+  (backend, threads, quality, the cache and history menus and the NLLB
+  model), `files.py` and `file_list.py` (the file list and its columns),
   `translation_run.py` (driving a batch and reporting its progress),
-  `theme.py` (light/dark/system palettes) and `about_dialog.py`.
+  `theme.py` (light/dark/system palettes), `about_dialog.py` and
+  `history_dialog.py`.
 - `worker.py` — thread that translates the file list and emits progress signals.
 - `pdf.py` — fixed PDF translator (paragraphs, progress, cancellation).
 - `translation.py` — language detection, supported formats and the
   progress/cache wrapper.
+- `history.py` — persistent record of the files each batch translated.
 - `nllb.py` — optional NLLB-200 backend (CTranslate2 + SentencePiece)
   exposing the same duck-typed API as argostranslate.
 - `download.py` — shared streaming download with progress and cancellation.

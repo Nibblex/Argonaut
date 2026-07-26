@@ -9,10 +9,12 @@ import argostranslate.settings
 import argostranslate.translate
 
 from argonaut import nllb
+from argonaut.history import TranslationHistory
 from argonaut.i18n import tr
 from argonaut.package_dialog import PackageDialog
 from argonaut.translation import TranslationCache
 from argonaut.window.file_list import human_size
+from argonaut.window.history_dialog import HistoryDialog
 from argonaut.worker import ModelDownloadWorker, quality_mode, speed_text, speed_units
 
 # Argos' own beam width, captured before any fast-mode override touches it
@@ -151,6 +153,47 @@ class EngineMixin:
         deleted = TranslationCache.purge_db(db_path)
         self.refresh_cache_menu()
         self.status.setText(tr("cache_cleared", count=deleted))
+        self.clear_status_btn.setVisible(True)
+
+    # --- translation history ---
+    @staticmethod
+    def history_enabled():
+        return QSettings().value("history_enabled", True, type=bool)
+
+    def toggle_history(self, enabled):
+        QSettings().setValue("history_enabled", enabled)
+
+    def refresh_history_menu(self):
+        """Shows the live size of the history file, like the cache menu.
+        Viewing and clearing stay available with recording disabled: the
+        file outlives the setting."""
+        count, size = TranslationHistory.db_info(
+            TranslationHistory.default_db_path()
+        )
+        self.history_size_action.setText(
+            tr("hist_size_info", size=human_size(size), count=count)
+        )
+
+    def change_history_ttl(self, days):
+        QSettings().setValue("history_ttl_days", days)
+
+    def show_history_dialog(self):
+        dialog = HistoryDialog(parent=self)
+        dialog.history_cleared.connect(self.refresh_history_menu)
+        dialog.exec_()
+        self.refresh_history_menu()
+
+    def clear_history(self):
+        db_path = TranslationHistory.default_db_path()
+        count, _ = TranslationHistory.db_info(db_path)
+        answer = QMessageBox.question(
+            self, tr("hist_title"), tr("hist_clear_msg", count=count)
+        )
+        if answer != QMessageBox.Yes:
+            return
+        deleted = TranslationHistory.purge_db(db_path)
+        self.refresh_history_menu()
+        self.status.setText(tr("hist_cleared", count=deleted))
         self.clear_status_btn.setVisible(True)
 
     # --- NLLB model ---

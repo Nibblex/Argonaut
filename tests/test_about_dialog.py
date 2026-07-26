@@ -18,6 +18,7 @@ def test_diagnostic_report_covers_the_environment(qapp):
     assert "Engine: NLLB-200 · Languages: 32" in report
     assert "NLLB model installed: no" in report  # tests run sandboxed
     assert "Cache: " in report
+    assert "History: " in report
     assert "Argos data: " in report
 
 

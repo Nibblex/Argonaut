@@ -2,14 +2,15 @@
 
 - file_list: the columns, per-file roles and the sortable row item
 - files: adding/removing/opening files, drag and drop, the output folder
-- engine: backend, threads, cache menu, packages and the NLLB model
+- engine: backend, threads, cache and history menus, packages, NLLB model
 - translation_run: driving a batch and reflecting its progress
 - main_window: widget construction, persistence and the deferred close
 
 Everything the old argonaut.window module exposed is re-exported here, so
 ``from argonaut.window import MainWindow`` keeps working. The modules the
 tests monkeypatch through this namespace (argostranslate, nllb, time,
-QDesktopServices, TranslationCache) are imported for the same reason."""
+QDesktopServices, TranslationCache, TranslationHistory) are imported for
+the same reason."""
 
 import time  # noqa: F401  (patched via argonaut.window.time in tests)
 
@@ -19,6 +20,7 @@ import argostranslate.settings  # noqa: F401
 import argostranslate.translate  # noqa: F401
 
 from argonaut import nllb  # noqa: F401
+from argonaut.history import TranslationHistory  # noqa: F401
 from argonaut.package_dialog import PackageDialog  # noqa: F401
 from argonaut.translation import TranslationCache  # noqa: F401
 from argonaut.window.file_list import (

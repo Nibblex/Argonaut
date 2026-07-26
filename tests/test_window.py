@@ -1103,6 +1103,93 @@ def test_package_dialog_opens_and_refreshes_on_changes(window, monkeypatch):
     assert refreshed == [True]
 
 
+def test_history_menu_defaults_to_recording(window):
+    from PyQt5.QtCore import QSettings
+
+    assert window.history_enabled()
+    assert window.history_enable_action.isChecked()
+    assert window.history_ttl_actions[2].isChecked()  # 90 days, like the cache
+
+    window.toggle_history(False)
+    assert QSettings().value("history_enabled", type=bool) is False
+    window.change_history_ttl(30)
+    assert QSettings().value("history_ttl_days", type=int) == 30
+
+
+def test_history_menu_shows_the_live_size(window):
+    from argonaut.history import TranslationHistory
+
+    history = TranslationHistory(TranslationHistory.default_db_path(), ttl_days=0)
+    history.record("/docs/a.txt", "/docs/a_es.txt", "en", "es", "argos", 1.0)
+    history.close()
+
+    window.refresh_history_menu()
+    assert "1 entries" in window.history_size_action.text()
+    assert not window.history_size_action.isEnabled()  # a read-only label
+
+
+def test_history_stays_manageable_while_disabled(window, monkeypatch):
+    """Turning recording off does not delete what was already recorded, so
+    viewing, expiry and clearing have to keep working."""
+    window.toggle_history(False)
+    window.refresh_history_menu()
+
+    assert window.history_ttl_menu.isEnabled()
+    assert window.history_clear_action.isEnabled()
+    assert window.history_show_action.isEnabled()
+
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
+    )
+    purged = []
+    monkeypatch.setattr(
+        argonaut.window.TranslationHistory, "purge_db",
+        staticmethod(lambda path: purged.append(path) or 4),
+    )
+    window.clear_history()
+    assert len(purged) == 1
+    assert tr("hist_cleared", count=4) in window.status.text()
+
+
+def test_clear_history_declined_keeps_it(window, monkeypatch):
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No)
+    )
+    purged = []
+    monkeypatch.setattr(
+        argonaut.window.TranslationHistory, "purge_db",
+        staticmethod(lambda path: purged.append(path)),
+    )
+    window.clear_history()
+    assert purged == []
+
+
+def test_history_dialog_opens_and_refreshes_the_menu(window, monkeypatch):
+    from argonaut.window.history_dialog import HistoryDialog
+
+    opened = []
+    monkeypatch.setattr(HistoryDialog, "exec_", lambda self: opened.append(self))
+    refreshed = []
+    monkeypatch.setattr(
+        window, "refresh_history_menu", lambda: refreshed.append(True)
+    )
+    window.show_history_dialog()
+
+    assert len(opened) == 1
+    # clearing from inside the dialog refreshes the menu, and so does closing
+    opened[0].history_cleared.emit()
+    assert len(refreshed) == 2
+
+
+def test_history_menu_is_translated(window):
+    window.change_language("es")
+    assert window.history_menu.title() == "H&istorial"
+    assert window.history_enable_action.text() == "Registrar historial"
+    assert window.history_show_action.text() == "Ver historial…"
+    assert window.history_clear_action.text() == "Borrar historial…"
+    window.change_language("en")
+
+
 def test_clear_cache_declined_leaves_the_cache_alone(window, monkeypatch):
     monkeypatch.setattr(
         QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No)

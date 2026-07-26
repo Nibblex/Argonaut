@@ -167,6 +167,37 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
         self.cache_clear_action.triggered.connect(self.clear_cache)
         self.cache_menu.addAction(self.cache_clear_action)
         self.cache_menu.aboutToShow.connect(self.refresh_cache_menu)
+        self.history_menu = self.settings_menu.addMenu("")
+        self.history_enable_action = QAction("", self, checkable=True)
+        self.history_enable_action.setChecked(self.history_enabled())
+        self.history_enable_action.triggered.connect(self.toggle_history)
+        self.history_menu.addAction(self.history_enable_action)
+        self.history_menu.addSeparator()
+        self.history_ttl_menu = self.history_menu.addMenu("")
+        self._history_ttl_options = [
+            (0, "cache_ttl_never"),
+            (30, "cache_ttl_30"),
+            (90, "cache_ttl_90"),
+            (365, "cache_ttl_365"),
+        ]
+        self.history_ttl_actions = self._fill_radio_menu(
+            self.history_ttl_menu,
+            [(days, "") for days, _ in self._history_ttl_options],  # retranslate_ui
+            QSettings().value("history_ttl_days", 90, type=int),
+            self.change_history_ttl,
+        )
+        self.history_menu.addSeparator()
+        self.history_size_action = QAction("", self)
+        self.history_size_action.setEnabled(False)  # a read-only label
+        self.history_menu.addAction(self.history_size_action)
+        self.history_menu.addSeparator()
+        self.history_show_action = QAction("", self)
+        self.history_show_action.triggered.connect(self.show_history_dialog)
+        self.history_menu.addAction(self.history_show_action)
+        self.history_clear_action = QAction("", self)
+        self.history_clear_action.triggered.connect(self.clear_history)
+        self.history_menu.addAction(self.history_clear_action)
+        self.history_menu.aboutToShow.connect(self.refresh_history_menu)
         self.settings_menu.addSeparator()
         self.pkg_install_action = QAction("", self)
         self.pkg_install_action.triggered.connect(self.show_package_dialog)
@@ -457,6 +488,14 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
             action.setText(tr(key))
         self.cache_clear_action.setText(tr("cache_clear"))
         self.refresh_cache_menu()
+        self.history_menu.setTitle(tr("menu_history"))
+        self.history_enable_action.setText(tr("hist_enabled"))
+        self.history_ttl_menu.setTitle(tr("cache_ttl"))
+        for (_, key), action in zip(self._history_ttl_options, self.history_ttl_actions):
+            action.setText(tr(key))
+        self.history_show_action.setText(tr("hist_show"))
+        self.history_clear_action.setText(tr("hist_clear"))
+        self.refresh_history_menu()
         self.update_engine_label()
         self.help_menu.setTitle(tr("menu_help"))
         self.about_action.setText(tr("about"))

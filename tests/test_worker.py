@@ -191,6 +191,53 @@ def test_fast_mode_namespaces_the_cache_apart(qapp, monkeypatch):
     assert nllb_worker._engine_version(translation) == nllb.MODEL_REPO + "+greedy"
 
 
+def test_a_finished_batch_is_recorded_in_the_history(qapp, tmp_path):
+    from argonaut.history import TranslationHistory
+
+    english, spanish = make_langs()
+    source = tmp_path / "note.txt"
+    source.write_text("hello world")
+    worker = make_worker([str(source)], english, spanish)
+    worker.run()
+
+    history = TranslationHistory(TranslationHistory.default_db_path(), ttl_days=0)
+    entry, = history.entries()
+    history.close()
+    assert entry.source_path == str(source)
+    assert entry.output_path == str(tmp_path / "note_es.txt")
+    assert (entry.from_code, entry.to_code) == ("en", "es")
+    assert entry.engine == "argos"
+    assert entry.seconds >= 0
+
+
+def test_a_failed_file_is_not_recorded(qapp, tmp_path):
+    """The history lists translations, not attempts."""
+    from argonaut.history import TranslationHistory
+
+    english, spanish = make_langs()
+    worker = make_worker([str(tmp_path / "missing.txt")], english, spanish)
+    worker.run()
+
+    assert TranslationHistory.db_info(TranslationHistory.default_db_path())[0] == 0
+
+
+def test_history_can_be_switched_off(qapp, tmp_path):
+    from PyQt5.QtCore import QSettings
+
+    from argonaut.history import TranslationHistory
+
+    QSettings().setValue("history_enabled", False)
+    english, spanish = make_langs()
+    source = tmp_path / "note.txt"
+    source.write_text("hello world")
+    worker = make_worker([str(source)], english, spanish)
+    worker.run()
+
+    assert not worker._history.enabled
+    assert TranslationHistory.db_info(TranslationHistory.default_db_path())[0] == 0
+    assert (tmp_path / "note_es.txt").exists()  # the translation still happened
+
+
 def test_run_reports_failures_and_continues(qapp, tmp_path):
     english, spanish = make_langs()
     good = tmp_path / "good.txt"

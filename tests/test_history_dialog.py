@@ -1,0 +1,181 @@
+import time
+
+import pytest
+from PyQt5.QtWidgets import QMessageBox
+
+from argonaut.history import TranslationHistory
+from argonaut.i18n import tr
+from argonaut.window import history_dialog
+from argonaut.window.history_dialog import (
+    DATE_COL,
+    ENGINE_COL,
+    FILE_COL,
+    PAIR_COL,
+    TIME_COL,
+    HistoryDialog,
+)
+
+
+@pytest.fixture
+def db(tmp_path):
+    return str(tmp_path / "history.db")
+
+
+def fill(db, entries):
+    """entries: (source, output, from, to, engine, seconds, when)."""
+    history = TranslationHistory(db, ttl_days=0)
+    for entry in entries:
+        history.record(*entry[:6], when=entry[6])
+    history.close()
+
+
+def make_dialog(qtbot, db):
+    dialog = HistoryDialog(db)
+    qtbot.addWidget(dialog)
+    return dialog
+
+
+def test_empty_history_says_so(qtbot, db):
+    dialog = make_dialog(qtbot, db)
+    assert dialog.tree.topLevelItemCount() == 0
+    assert dialog.summary.text() == tr("hist_empty")
+    assert not dialog.clear_btn.isEnabled()
+    assert not dialog.open_btn.isEnabled()
+
+
+def test_rows_show_what_was_translated(qtbot, db, tmp_path):
+    out = tmp_path / "report_es.docx"
+    out.write_text("translated")
+    when = int(time.mktime((2026, 7, 26, 15, 30, 0, 0, 0, -1)))
+    fill(db, [(str(tmp_path / "report.docx"), str(out), "en", "es", "nllb", 75, when)])
+
+    dialog = make_dialog(qtbot, db)
+    item = dialog.tree.topLevelItem(0)
+    assert item.text(DATE_COL) == "2026-07-26 15:30"
+    assert item.text(FILE_COL) == "report.docx"
+    assert item.text(PAIR_COL) == "en → es"
+    assert item.text(ENGINE_COL) == "NLLB-200"  # the engine id is shown by name
+    assert item.text(TIME_COL) == "01:15"
+    assert str(out) in item.toolTip(FILE_COL)
+    assert not item.isDisabled()
+    assert dialog.summary.text() == tr("hist_count", count=1)
+
+
+def test_newest_translation_comes_first(qtbot, db, tmp_path):
+    now = int(time.time())
+    fill(db, [
+        (str(tmp_path / "old.txt"), "", "en", "es", "argos", 1, now - 60),
+        (str(tmp_path / "new.txt"), "", "en", "es", "argos", 1, now),
+    ])
+    dialog = make_dialog(qtbot, db)
+    assert dialog.tree.topLevelItem(0).text(FILE_COL) == "new.txt"
+
+
+def test_a_translation_that_no_longer_exists_is_greyed_out(qtbot, db, tmp_path):
+    """The history records what happened, so a deleted output stays listed
+    instead of vanishing — just marked as gone and not openable."""
+    fill(db, [
+        (str(tmp_path / "gone.txt"), str(tmp_path / "gone_es.txt"),
+         "en", "es", "argos", 1, int(time.time())),
+    ])
+    dialog = make_dialog(qtbot, db)
+    item = dialog.tree.topLevelItem(0)
+    assert item.isDisabled()
+    assert tr("hist_missing") in item.toolTip(FILE_COL)
+
+    dialog.tree.setCurrentItem(item)
+    assert dialog.selected_output() is None
+    assert not dialog.open_btn.isEnabled()
+
+
+def test_selecting_an_existing_translation_enables_opening(qtbot, db, tmp_path):
+    out = tmp_path / "there_es.txt"
+    out.write_text("x")
+    fill(db, [
+        (str(tmp_path / "there.txt"), str(out), "en", "es", "argos", 1,
+         int(time.time())),
+    ])
+    dialog = make_dialog(qtbot, db)
+    dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
+    assert dialog.open_btn.isEnabled()
+    assert dialog.selected_output() == str(out)
+
+
+def test_opening_a_translation_asks_the_desktop_to_open_it(qtbot, db, tmp_path, monkeypatch):
+    out = tmp_path / "open_es.txt"
+    out.write_text("x")
+    fill(db, [
+        (str(tmp_path / "open.txt"), str(out), "en", "es", "argos", 1,
+         int(time.time())),
+    ])
+    opened = []
+    monkeypatch.setattr(
+        history_dialog.QDesktopServices, "openUrl",
+        lambda url: opened.append(url.toLocalFile()),
+    )
+    dialog = make_dialog(qtbot, db)
+    item = dialog.tree.topLevelItem(0)
+
+    dialog.open_item(item, FILE_COL)  # double-click
+    dialog.tree.setCurrentItem(item)
+    dialog.open_selected()            # and the button
+    assert opened == [str(out), str(out)]
+
+
+def test_opening_does_nothing_when_the_file_is_gone(qtbot, db, tmp_path, monkeypatch):
+    fill(db, [
+        (str(tmp_path / "gone.txt"), str(tmp_path / "gone_es.txt"),
+         "en", "es", "argos", 1, int(time.time())),
+    ])
+    opened = []
+    monkeypatch.setattr(
+        history_dialog.QDesktopServices, "openUrl", lambda url: opened.append(url)
+    )
+    dialog = make_dialog(qtbot, db)
+    dialog.open_item(dialog.tree.topLevelItem(0), FILE_COL)
+    dialog.open_selected()  # nothing selected either
+    assert opened == []
+
+
+def test_clearing_empties_the_list_and_announces_it(qtbot, db, tmp_path, monkeypatch):
+    fill(db, [
+        (str(tmp_path / "a.txt"), "", "en", "es", "argos", 1, int(time.time())),
+    ])
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    dialog = make_dialog(qtbot, db)
+    cleared = []
+    dialog.history_cleared.connect(lambda: cleared.append(True))
+
+    dialog.clear_history()
+    assert dialog.tree.topLevelItemCount() == 0
+    assert dialog.summary.text() == tr("hist_empty")
+    assert cleared == [True]  # the menu's size label is told to refresh
+    assert TranslationHistory.db_info(db)[0] == 0
+
+
+def test_declining_the_confirmation_keeps_the_history(qtbot, db, tmp_path, monkeypatch):
+    fill(db, [
+        (str(tmp_path / "a.txt"), "", "en", "es", "argos", 1, int(time.time())),
+    ])
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.No)
+    dialog = make_dialog(qtbot, db)
+    dialog.clear_history()
+    assert dialog.tree.topLevelItemCount() == 1
+    assert TranslationHistory.db_info(db)[0] == 1
+
+
+def test_viewing_the_history_never_prunes_it(qtbot, db, tmp_path):
+    """Opening the dialog must not apply the expiry the worker uses, or
+    simply looking at an old history would delete it."""
+    old = int(time.time()) - 3650 * 86400
+    fill(db, [(str(tmp_path / "ancient.txt"), "", "en", "es", "argos", 1, old)])
+    dialog = make_dialog(qtbot, db)
+    assert dialog.tree.topLevelItemCount() == 1
+    assert TranslationHistory.db_info(db)[0] == 1
+
+
+def test_the_dialog_defaults_to_the_standard_database(qtbot, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    dialog = HistoryDialog()
+    qtbot.addWidget(dialog)
+    assert dialog.db_path == TranslationHistory.default_db_path()

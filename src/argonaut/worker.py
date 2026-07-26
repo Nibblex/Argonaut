@@ -7,6 +7,7 @@ from PyQt5.QtCore import QSettings, QThread, pyqtSignal
 from argostranslatefiles import argostranslatefiles
 
 from argonaut import nllb, packages
+from argonaut.history import TranslationHistory
 from argonaut.i18n import tr
 from argonaut.pdf import FastPdfTranslator
 from argonaut.translation import (
@@ -234,6 +235,14 @@ class TranslateWorker(CancellableThread):
         self._cache_ttl_days = QSettings().value("cache_ttl_days", 90, type=int)
         self._cache_db_path = TranslationCache.default_db_path() if cache_on else None
         self._batch_cache = None
+        # the history is opened alongside the cache, and for the same reason:
+        # opening it prunes expired entries
+        history_on = QSettings().value("history_enabled", True, type=bool)
+        self._history_ttl_days = QSettings().value("history_ttl_days", 90, type=int)
+        self._history_db_path = (
+            TranslationHistory.default_db_path() if history_on else None
+        )
+        self._history = None
 
     def output_path_for(self, to_code, file_path):
         # same naming scheme as the library, but honouring the output
@@ -285,12 +294,16 @@ class TranslateWorker(CancellableThread):
         self._batch_cache = TranslationCache(
             self._cache_db_path, ttl_days=self._cache_ttl_days
         )
+        self._history = TranslationHistory(
+            self._history_db_path, ttl_days=self._history_ttl_days
+        )
         try:
             self._translate_files()
         finally:
             # a cancelled batch has to let go of its database connection and
             # of the segments it has translated so far, just like a finished one
             self._batch_cache.close()
+            self._history.close()
             # the window leaves its busy state on this signal, so it is
             # emitted from a finally: an unexpected error must never leave the
             # interface stuck with every control disabled
@@ -338,7 +351,13 @@ class TranslateWorker(CancellableThread):
                         proxy, path, get_output_path=self.get_output_path
                     )
                 self.file_cache_stats.emit(i, proxy.reused, self._batch_cache.reused)
-                self.file_done.emit(i, out or "", time.monotonic() - file_start)
+                elapsed = time.monotonic() - file_start
+                self._history.record(
+                    path, out or "",
+                    translation.from_lang.code, translation.to_lang.code,
+                    self.engine_id, elapsed,
+                )
+                self.file_done.emit(i, out or "", elapsed)
             except CancelledError:
                 break
             except Exception as exc:  # noqa: BLE001

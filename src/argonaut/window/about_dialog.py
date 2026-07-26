@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
 import argostranslate.settings
 
 from argonaut import nllb
+from argonaut.history import TranslationHistory
 from argonaut.i18n import tr
 from argonaut.translation import SUPPORTED_EXTS, TranslationCache
 from argonaut.window.file_list import human_size
@@ -75,6 +76,8 @@ def diagnostic_report(backend, language_count):
     Deliberately untranslated: it is read by whoever triages the issue."""
     cache_db = TranslationCache.default_db_path()
     entries, size = TranslationCache.db_info(cache_db)
+    history_db = TranslationHistory.default_db_path()
+    hist_entries, hist_size = TranslationHistory.db_info(history_db)
     engine = "NLLB-200" if backend == "nllb" else "Argos Translate"
     deps = ", ".join(f"{name} {_dist_version(name)}" for name in DEPENDENCIES)
     return "\n".join([
@@ -87,6 +90,7 @@ def diagnostic_report(backend, language_count):
         f"NLLB model installed: {'yes' if nllb.is_model_installed() else 'no'}"
         f" ({nllb.model_dir()})",
         f"Cache: {entries} entries, {human_size(size)} ({cache_db})",
+        f"History: {hist_entries} entries, {human_size(hist_size)} ({history_db})",
         f"Argos data: {getattr(argostranslate.settings, 'data_dir', '')}",
     ])
 
