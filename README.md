@@ -144,10 +144,13 @@ it is an error.
 ## Interface language
 
 The interface starts in English. In the **Language** menu you can switch
-to Spanish, French, German, Italian or Portuguese; the change applies
-instantly and the preference is saved (QSettings) for future launches.
-To add a language just add its dictionary in `i18n.py` (missing keys fall
-back to English).
+to Spanish, French, German, Italian, Portuguese, Russian, Chinese,
+Japanese, Dutch, Polish or Turkish; the change applies instantly and the
+preference is saved (QSettings) for future launches. To add a language
+just add its dictionary in `i18n.py` and list it in `LANGUAGES` (missing
+keys fall back to English). The test suite checks that every language
+carries the same keys, the same `{placeholders}` and no duplicate
+keyboard accelerators within a menu.
 
 The **Help** menu includes "About Argonaut…", a dialog with three tabs:
 *About* (version, a short description, the supported formats and links to
@@ -191,7 +194,8 @@ All modules live in the `src/argonaut/` package:
 - `packages.py` — Argos package index, download, installation and removal.
 - `package_dialog.py` — dialog to browse, install and remove packages.
 - `i18n.py` — interface languages (English by default, Spanish, French,
-  German, Italian and Portuguese).
+  German, Italian, Portuguese, Russian, Chinese, Japanese, Dutch, Polish
+  and Turkish).
 
 Packaging lives at the top level: `pyproject.toml` (PyPI),
 `io.github.nibblex.Argonaut.yml` (Flatpak manifest) and `data/`

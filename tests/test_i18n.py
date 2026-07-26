@@ -68,3 +68,32 @@ def test_about_text_renders(code):
     assert "Argonaut 9.9.9" in text
     assert ".txt .pdf" in text
     assert "github.com/Nibblex/Argonaut" in text
+
+
+# menus that share a menu bar (or a parent menu) compete for the same
+# keyboard accelerators, so each group must use a distinct letter
+ACCELERATOR_GROUPS = (
+    ("menu bar", ["menu_language", "menu_settings", "menu_help"]),
+    ("Settings", ["menu_engine", "menu_theme", "menu_cache", "menu_history"]),
+)
+
+
+def accelerator(label):
+    """The letter Qt underlines, or None when the label declares none."""
+    marker = label.find("&")
+    return label[marker + 1].lower() if 0 <= marker < len(label) - 1 else None
+
+
+@pytest.mark.parametrize("code", [code for code, _ in LANGUAGES])
+@pytest.mark.parametrize("group,keys", ACCELERATOR_GROUPS)
+def test_menu_accelerators_are_present_and_unique(code, group, keys):
+    """A duplicate accelerator silently breaks keyboard navigation: Qt gives
+    the key to one menu and the other becomes unreachable."""
+    letters = []
+    for key in keys:
+        letter = accelerator(STRINGS[code][key])
+        assert letter is not None, f"{code}/{key} declares no accelerator"
+        letters.append(letter)
+    assert len(set(letters)) == len(letters), (
+        f"{code} {group}: duplicate accelerator in {dict(zip(keys, letters))}"
+    )
