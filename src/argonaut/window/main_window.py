@@ -64,6 +64,7 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
         self.results = []
         self.detected = {}
         self._batch_reused = 0  # segments the batch served from the cache
+        self._batch_segments = 0  # segments that reuse is out of
         self._cancelling = False  # True while waiting for a worker to stop
         self._closing = False  # True when a close is deferred until it stops
         # live status below the progress bar, as (translation key, kwargs)
@@ -299,11 +300,16 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
         self.remove_btn.clicked.connect(self.remove_selected)
         self.clear_btn = QPushButton()
         self.clear_btn.clicked.connect(self.clear_files)
+        # the same dialog the History menu opens; it is about past runs rather
+        # than the loaded files, so it sits across the stretch from them
+        self.history_btn = QPushButton()
+        self.history_btn.clicked.connect(self.show_history_dialog)
         files_row.addWidget(self.add_btn)
         files_row.addWidget(self.open_file_btn)
         files_row.addWidget(self.remove_btn)
         files_row.addWidget(self.clear_btn)
         files_row.addStretch(1)
+        files_row.addWidget(self.history_btn)
         layout.addLayout(files_row)
 
         # --- output folder ---
@@ -535,6 +541,7 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
         self.open_file_btn.setToolTip(tr("open_tooltip"))
         self.remove_btn.setText(tr("remove"))
         self.clear_btn.setText(tr("clear"))
+        self.history_btn.setText(tr("hist_show"))
         self.out_btn.setText(tr("output"))
         self.out_btn.setToolTip(tr("output_tooltip"))
         self.open_out_btn.setToolTip(tr("output_open_tooltip"))

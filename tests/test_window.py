@@ -283,12 +283,12 @@ def test_cache_reuse_is_shown_per_file_and_for_the_batch(window):
     window._batch_reused = 0
 
     # first file reused nothing; its tooltip stays blank, no batch note yet
-    window.on_file_cache_stats(0, 0, 0)
+    window.on_file_cache_stats(0, 0, 0, 10)
     assert window._item_for_path("/a/one.txt").toolTip(STATUS_COL) == ""
     assert window.total_label.toolTip() == ""
 
     # second file reused 3 segments, lifting the batch total to 3
-    window.on_file_cache_stats(1, 3, 3)
+    window.on_file_cache_stats(1, 3, 3, 20)
     two = window._item_for_path("/a/two.txt")
     assert two.toolTip(STATUS_COL) == tr("cache_reused_file", count=3)
     assert window.total_label.toolTip() == tr("cache_reused_batch", count=3)
@@ -481,11 +481,44 @@ def test_language_change_updates_the_live_status_mid_translation(window):
         f'{tr("detected", name="English")}'
     )
 
-    # and so are the per-page phase messages
+    # and so are the per-page phase messages, which keep the suffix
     window.on_phase_changed("generating", {"name": "doc.txt", "done": 2, "total": 5})
     window.change_language("es")
+    assert window.status.text() == (
+        f'{tr("generating", name="doc.txt", done=2, total=5)} — '
+        f'{tr("detected", name="English")}'
+    )
+
+
+def test_the_detected_language_survives_the_phase_messages(window):
+    class FakeWorker:
+        files = ["/a/doc.pdf", "/a/other.pdf"]
+
+        def isRunning(self):
+            return True
+
+        def cancel(self):
+            pass
+
+    window.worker = FakeWorker()
+
+    window.on_file_started(0, "/a/doc.pdf")
+    window.on_language_detected(0, "English")
+    # the phases of a PDF start within milliseconds of the detection, so the
+    # notice has to outlive them to be read at all
+    for phase in ("reading", "translating_page", "generating"):
+        window.on_phase_changed(phase, {"name": "doc.pdf", "done": 1, "total": 3})
+        assert tr("detected", name="English") in window.status.text()
+
+    window.on_phase_changed("saving", {"name": "doc.pdf"})
+    assert window.status.text() == (
+        f'{tr("saving", name="doc.pdf")} — {tr("detected", name="English")}'
+    )
+
+    # but it does not follow the batch on to the next file
+    window.on_file_started(1, "/a/other.pdf")
     assert window.status.text() == tr(
-        "generating", name="doc.txt", done=2, total=5
+        "translating", name="other.pdf", index=2, total=2
     )
 
 
@@ -781,6 +814,95 @@ def test_finished_summary_lists_results_and_errors(window):
     window.clear_status()
     assert window.status.text() == tr("ready")
     assert window.clear_status_btn.isHidden()
+
+
+def test_finished_summary_reports_how_much_the_cache_answered(window):
+    class DoneWorker:
+        files = ["/a/doc.txt"]
+
+        def isRunning(self):
+            return False
+
+        def was_cancelled(self):
+            return False
+
+    window.worker = DoneWorker()
+    window.add_paths(["/a/doc.txt"])
+    window.results = [("ok", "/a/doc_es.txt")]
+    window.on_file_cache_stats(0, 120, 120, 400)
+    window.on_finished()
+
+    expected = tr("cache_reused_summary", reused=120, total=400, percent=30)
+    assert window.status.text().endswith(expected)  # last line of the summary
+    assert "120" in expected and "400" in expected and "30" in expected
+
+
+def test_the_cache_line_is_left_out_when_nothing_was_reused(window):
+    """A first run, or one with the cache switched off, would otherwise end
+    on a "0 of 400" line that says nothing."""
+    class DoneWorker:
+        files = ["/a/doc.txt"]
+
+        def isRunning(self):
+            return False
+
+        def was_cancelled(self):
+            return False
+
+    window.worker = DoneWorker()
+    window.add_paths(["/a/doc.txt"])
+    window.results = [("ok", "/a/doc_es.txt")]
+    window.on_file_cache_stats(0, 0, 0, 400)
+    window.on_finished()
+
+    assert window.cache_summary_line() is None
+    assert window.status.text() == f'{tr("translated_header")}\n  → /a/doc_es.txt'
+
+
+def test_a_cancelled_run_still_reports_its_cache_reuse(window):
+    """The segments it did reuse are as real as the pages it produced."""
+    class CancelledWorker:
+        files = ["/a/doc.txt"]
+
+        def isRunning(self):
+            return False
+
+        def was_cancelled(self):
+            return True
+
+    window.worker = CancelledWorker()
+    window.add_paths(["/a/doc.txt"])
+    window.results = []
+    window.on_file_cache_stats(0, 7, 7, 21)
+    window.on_finished()
+
+    text = window.status.text()
+    assert text.startswith(tr("cancelled"))
+    assert text.endswith(tr("cache_reused_summary", reused=7, total=21, percent=33))
+
+
+def test_the_cache_summary_follows_the_interface_language(window):
+    window._batch_reused, window._batch_segments = 50, 200
+    assert window.cache_summary_line() == tr(
+        "cache_reused_summary", reused=50, total=200, percent=25
+    )
+    window.change_language("es")
+    assert window.cache_summary_line() == (
+        "Caché: 50 de 200 segmentos reutilizados (25 %)"
+    )
+    window.change_language("en")
+
+
+def test_a_new_batch_forgets_the_previous_run_cache_figures(window, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("hello")
+    window._batch_reused, window._batch_segments = 50, 200
+    window.add_paths([str(doc)])
+
+    window.start_translation()
+    window.worker.cancel()
+    window.worker.wait(5000)
+    assert (window._batch_reused, window._batch_segments) == (0, 0)
 
 
 def test_skip_existing_setting_persists_and_reaches_the_worker(qtbot, langs, tmp_path):
@@ -1212,6 +1334,28 @@ def test_history_menu_is_translated(window):
     assert window.history_enable_action.text() == "Registrar historial"
     assert window.history_show_action.text() == "Ver historial…"
     assert window.history_clear_action.text() == "Borrar historial…"
+    window.change_language("en")
+
+
+def test_the_history_button_opens_the_same_dialog_as_the_menu(window, monkeypatch):
+    from argonaut.window.history_dialog import HistoryDialog
+
+    opened = []
+    monkeypatch.setattr(HistoryDialog, "exec_", lambda self: opened.append(self))
+    assert window.history_btn.text() == tr("hist_show")
+
+    window.history_btn.click()
+    assert len(opened) == 1
+
+    # past runs stay readable with recording switched off, and while one is
+    # under way: the dialog only reads the database
+    window.history_enable_action.setChecked(False)
+    window.set_busy(True)
+    assert window.history_btn.isEnabled()
+    window.set_busy(False)
+
+    window.change_language("es")
+    assert window.history_btn.text() == "Ver historial…"
     window.change_language("en")
 
 

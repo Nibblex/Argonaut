@@ -1,15 +1,19 @@
 import time
 
 import pytest
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QMessageBox
 
 from argonaut.history import TranslationHistory
 from argonaut.i18n import tr
 from argonaut.window import history_dialog
 from argonaut.window.history_dialog import (
+    CACHE_COL,
+    COLUMN_KEYS,
     DATE_COL,
     ENGINE_COL,
     FILE_COL,
+    FOLDER_COL,
     PAIR_COL,
     TIME_COL,
     HistoryDialog,
@@ -26,6 +30,18 @@ def fill(db, entries):
     history = TranslationHistory(db, ttl_days=0)
     for entry in entries:
         history.record(*entry[:6], when=entry[6])
+    history.close()
+
+
+def fill_cache_figures(db, rows):
+    """rows: (name, reused, segments), newest last."""
+    history = TranslationHistory(db, ttl_days=0)
+    now = int(time.time())
+    for i, (name, reused, segments) in enumerate(rows):
+        history.record(
+            f"/docs/{name}", "", "en", "es", "argos", 1.0,
+            reused=reused, segments=segments, when=now - len(rows) + i,
+        )
     history.close()
 
 
@@ -53,12 +69,91 @@ def test_rows_show_what_was_translated(qtbot, db, tmp_path):
     item = dialog.tree.topLevelItem(0)
     assert item.text(DATE_COL) == "2026-07-26 15:30"
     assert item.text(FILE_COL) == "report.docx"
+    assert item.text(FOLDER_COL) == str(tmp_path)  # the source's folder
     assert item.text(PAIR_COL) == "en → es"
     assert item.text(ENGINE_COL) == "NLLB-200"  # the engine id is shown by name
     assert item.text(TIME_COL) == "01:15"
     assert str(out) in item.toolTip(FILE_COL)
     assert not item.isDisabled()
     assert dialog.summary.text() == tr("hist_count", count=1)
+
+
+def test_a_row_shows_how_much_of_it_the_cache_answered(qtbot, db):
+    fill_cache_figures(db, [("doc.txt", 30, 120)])
+    dialog = make_dialog(qtbot, db)
+    item = dialog.tree.topLevelItem(0)
+
+    assert item.text(CACHE_COL) == "25 %"  # the rate in the cell…
+    assert item.toolTip(CACHE_COL) == tr(   # …the figures behind it in full
+        "cache_reused_summary", reused=30, total=120, percent=25
+    )
+
+
+def test_a_row_with_no_cache_figures_leaves_the_cell_empty(qtbot, db, tmp_path):
+    """An entry recorded before the figures were kept knows nothing about the
+    cache, which is not the same as a run that reused none of it."""
+    fill(db, [
+        (str(tmp_path / "old.txt"), "", "en", "es", "argos", 1, int(time.time())),
+    ])
+    fill_cache_figures(db, [("none.txt", 0, 80)])
+    dialog = make_dialog(qtbot, db)
+    rows = {
+        dialog.tree.topLevelItem(i).text(FILE_COL): dialog.tree.topLevelItem(i)
+        for i in range(2)
+    }
+
+    assert rows["old.txt"].text(CACHE_COL) == ""       # unknown
+    assert rows["old.txt"].toolTip(CACHE_COL) == ""
+    assert rows["none.txt"].text(CACHE_COL) == "0 %"   # known to be none
+
+
+def test_the_cache_column_sorts_by_the_rate_not_by_its_text(qtbot, db, tmp_path):
+    fill(db, [  # a row with no figures at all
+        (str(tmp_path / "unknown.txt"), "", "en", "es", "argos", 1, int(time.time())),
+    ])
+    fill_cache_figures(db, [("full.txt", 10, 10), ("third.txt", 1, 3)])
+    dialog = make_dialog(qtbot, db)
+
+    def order():
+        return [
+            dialog.tree.topLevelItem(i).text(FILE_COL)
+            for i in range(dialog.tree.topLevelItemCount())
+        ]
+
+    dialog.tree.sortItems(CACHE_COL, Qt.AscendingOrder)
+    # "100 %" would sort before "33 %" as a string; and the row that recorded
+    # no rate groups below both rather than among them
+    assert order() == ["unknown.txt", "third.txt", "full.txt"]
+
+    dialog.tree.sortItems(CACHE_COL, Qt.DescendingOrder)
+    assert order() == ["full.txt", "third.txt", "unknown.txt"]
+
+
+def test_the_header_names_every_column(qtbot, db):
+    dialog = make_dialog(qtbot, db)
+    assert dialog.tree.columnCount() == len(COLUMN_KEYS)
+    header = dialog.tree.headerItem()
+    assert [header.text(col) for col in range(len(COLUMN_KEYS))] == [
+        tr(key) for key in COLUMN_KEYS
+    ]
+
+
+def test_same_named_files_are_told_apart_by_their_folder(qtbot, db, tmp_path):
+    """The file column carries only the base name, so the folder is what says
+    which of two same-named documents a row is about."""
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    now = int(time.time())
+    fill(db, [
+        (str(tmp_path / "one" / "doc.txt"), "", "en", "es", "argos", 1, now - 60),
+        (str(tmp_path / "two" / "doc.txt"), "", "en", "es", "argos", 1, now),
+    ])
+    dialog = make_dialog(qtbot, db)
+    rows = [dialog.tree.topLevelItem(i) for i in range(2)]
+    assert [row.text(FILE_COL) for row in rows] == ["doc.txt", "doc.txt"]
+    assert [row.text(FOLDER_COL) for row in rows] == [
+        str(tmp_path / "two"), str(tmp_path / "one")  # newest first
+    ]
 
 
 def test_newest_translation_comes_first(qtbot, db, tmp_path):

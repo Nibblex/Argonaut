@@ -202,8 +202,9 @@ class TranslateWorker(CancellableThread):
     file_done = pyqtSignal(int, str, float)  # index, output path, seconds
     file_failed = pyqtSignal(int, str)
     file_skipped = pyqtSignal(int, str)  # index, existing output path
-    # index, segments this file reused from the cache, batch total so far
-    file_cache_stats = pyqtSignal(int, int, int)
+    # index, segments this file reused from the cache, batch reuse so far and
+    # the segments that reuse is out of (so the window can show a rate)
+    file_cache_stats = pyqtSignal(int, int, int, int)
     progress_update = pyqtSignal(int, int)  # chunks done, total (0 = unknown)
     # current phase as a (translation key, kwargs) pair, so the window can
     # re-render it if the interface language changes mid-translation
@@ -227,6 +228,7 @@ class TranslateWorker(CancellableThread):
         self._last_yield = 0.0
         self._current_name = ""
         self._total_chunks = 0  # 0 until the file says how much work it holds
+        self._batch_segments = 0  # cacheable segments seen across the batch
         self._pkg_versions = None  # pair -> version, read once per batch
         # shared across every file so a repeated paragraph translates once
         # for the whole batch (namespaced by engine, model version and
@@ -360,12 +362,16 @@ class TranslateWorker(CancellableThread):
                     out = argostranslatefiles.translate_file(
                         proxy, path, get_output_path=self.get_output_path
                     )
-                self.file_cache_stats.emit(i, proxy.reused, self._batch_cache.reused)
+                self._batch_segments += proxy.segments
+                self.file_cache_stats.emit(
+                    i, proxy.reused, self._batch_cache.reused, self._batch_segments
+                )
                 elapsed = time.monotonic() - file_start
                 self._history.record(
                     path, out or "",
                     translation.from_lang.code, translation.to_lang.code,
                     self.engine_id, elapsed,
+                    reused=proxy.reused, segments=proxy.segments,
                 )
                 self.file_done.emit(i, out or "", elapsed)
             except CancelledError:

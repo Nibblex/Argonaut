@@ -147,14 +147,15 @@ def test_batch_shares_the_translation_cache_across_files(qapp, tmp_path):
     done, stats = [], []
     worker.file_done.connect(lambda i, out, secs: done.append(out))
     worker.file_cache_stats.connect(
-        lambda i, reused, total: stats.append((i, reused, total))
+        lambda i, reused, batch, segments: stats.append((i, reused, batch, segments))
     )
     worker.run()
 
     assert len(done) == 2
     assert inner.calls == 1  # the second file reused the first's translation
-    # first file: nothing to reuse yet; second: its one segment came from cache
-    assert stats == [(0, 0, 0), (1, 1, 1)]
+    # first file: nothing to reuse yet; second: its one segment came from cache.
+    # The last figure is what the batch reuse is out of: one segment per file
+    assert stats == [(0, 0, 0, 1), (1, 1, 1, 2)]
 
 
 def test_cache_entries_do_not_survive_a_package_upgrade(qapp, tmp_path, monkeypatch):
@@ -225,6 +226,28 @@ def test_a_finished_batch_is_recorded_in_the_history(qapp, tmp_path):
     assert (entry.from_code, entry.to_code) == ("en", "es")
     assert entry.engine == "argos"
     assert entry.seconds >= 0
+
+
+def test_each_history_row_carries_that_file_cache_figures(qapp, tmp_path):
+    """The dialog's cache column reads these, so each row has to carry its own
+    file's share rather than the batch's running total."""
+    from argonaut.history import TranslationHistory
+
+    english, spanish = make_langs()
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / name).write_text("hello world")
+    worker = make_worker(
+        [str(tmp_path / "a.txt"), str(tmp_path / "b.txt")], english, spanish
+    )
+    worker.run()
+
+    history = TranslationHistory(TranslationHistory.default_db_path(), ttl_days=0)
+    rows = {entry.source_path: entry for entry in history.entries()}
+    history.close()
+    first = rows[str(tmp_path / "a.txt")]
+    second = rows[str(tmp_path / "b.txt")]
+    assert (first.reused, first.segments) == (0, 1)   # nothing to reuse yet
+    assert (second.reused, second.segments) == (1, 1)  # served from the cache
 
 
 def test_a_failed_file_is_not_recorded(qapp, tmp_path):

@@ -49,7 +49,7 @@ CREDITS_HTML = (
     "<li><a href='https://www.argosopentech.com/'>Argos Translate</a>"
     " — MIT</li>"
     "<li><a href='https://github.com/LibreTranslate/argos-translate-files'>"
-    "argos-translate-files</a> — MIT</li>"
+    "argos-translate-files</a> — AGPL-3.0</li>"
     "<li><a href='https://github.com/pymupdf/PyMuPDF'>PyMuPDF</a>"
     " — AGPL-3.0</li>"
     "<li><a href='https://www.riverbankcomputing.com/software/pyqt/'>PyQt5</a>"

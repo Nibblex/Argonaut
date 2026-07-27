@@ -22,18 +22,42 @@ from argonaut.window.translation_run import TranslationRunMixin
 
 DATE_COL = 0
 FILE_COL = 1
-PAIR_COL = 2
-ENGINE_COL = 3
-TIME_COL = 4
+FOLDER_COL = 2
+PAIR_COL = 3
+ENGINE_COL = 4
+TIME_COL = 5
+CACHE_COL = 6
 COLUMN_KEYS = (
-    "hist_col_date", "hist_col_file", "hist_col_pair",
-    "hist_col_engine", "hist_col_time",
+    "hist_col_date", "hist_col_file", "hist_col_folder", "hist_col_pair",
+    "hist_col_engine", "hist_col_time", "hist_col_cache",
 )
 
 OUTPUT_ROLE = Qt.UserRole  # where the translation was written
 SOURCE_ROLE = Qt.UserRole + 1
+# the cache reuse rate as a number, so the column sorts by it rather than by
+# the "33 %" it reads; None for a row recorded before it was kept
+CACHE_RATE_ROLE = Qt.UserRole + 2
 
 ENGINE_NAMES = {"nllb": "NLLB-200", "argos": "Argos Translate"}
+
+
+class HistoryItem(QTreeWidgetItem):
+    """A row in the history. The cache column sorts by its rate rather than by
+    the text of it, since "100 %" is not greater than "33 %" as a string; the
+    rest sort case-insensitively by their text."""
+
+    def __lt__(self, other):
+        tree = self.treeWidget()
+        column = tree.sortColumn() if tree else DATE_COL
+        if column == CACHE_COL:
+            return self.cache_rate() < other.cache_rate()
+        return self.text(column).lower() < other.text(column).lower()
+
+    def cache_rate(self):
+        """The reuse rate, or -1 for a row that recorded none: those group
+        below every rate rather than reading as a run that reused nothing."""
+        rate = self.data(CACHE_COL, CACHE_RATE_ROLE)
+        return -1 if rate is None else rate
 
 
 class HistoryDialog(QDialog):
@@ -101,16 +125,31 @@ class HistoryDialog(QDialog):
 
     @staticmethod
     def _item_for(entry):
-        item = QTreeWidgetItem()
+        item = HistoryItem()
         item.setText(
             DATE_COL,
             datetime.fromtimestamp(entry.translated_at).strftime("%Y-%m-%d %H:%M"),
         )
         item.setText(FILE_COL, os.path.basename(entry.source_path))
+        # the folder of the source, as the file list shows it: the name alone
+        # does not say which of two same-named documents was translated
+        item.setText(FOLDER_COL, os.path.dirname(entry.source_path))
         item.setText(PAIR_COL, f"{entry.from_code} → {entry.to_code}")
         item.setText(ENGINE_COL, ENGINE_NAMES.get(entry.engine, entry.engine))
         item.setText(TIME_COL, TranslationRunMixin.format_duration(entry.seconds))
         item.setTextAlignment(TIME_COL, Qt.AlignRight | Qt.AlignVCenter)
+        # how much of this file the cache answered: the rate in the cell, the
+        # figures behind it in the tooltip, and an empty cell for a row
+        # recorded before they were kept — which is not the same as a 0 %
+        if entry.segments:
+            rate = round(100 * entry.reused / entry.segments)
+            item.setText(CACHE_COL, f"{rate} %")
+            item.setData(CACHE_COL, CACHE_RATE_ROLE, rate)
+            item.setToolTip(CACHE_COL, tr(
+                "cache_reused_summary",
+                reused=entry.reused, total=entry.segments, percent=rate,
+            ))
+        item.setTextAlignment(CACHE_COL, Qt.AlignRight | Qt.AlignVCenter)
         item.setData(FILE_COL, OUTPUT_ROLE, entry.output_path)
         item.setData(FILE_COL, SOURCE_ROLE, entry.source_path)
         item.setToolTip(

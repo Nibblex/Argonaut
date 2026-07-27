@@ -49,6 +49,14 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.7.2" date="2026-07-26">
+      <description>
+        <p>Maintenance release built from the current development tree:
+        improves translation flow and history handling, updates multiple
+        interface texts and localizations, and includes refinements in
+        worker execution and related tests.</p>
+      </description>
+    </release>
     <release version="1.7.1" date="2026-07-27">
       <description>
         <p>Fixes a fault in 1.7.0: a paragraph translated into Arabic or

@@ -58,6 +58,7 @@ class TranslationRunMixin:
         self.results = []
         self.detected = {}  # file index -> detected language
         self._batch_reused = 0
+        self._batch_segments = 0
         for path in files:
             item = self._set_file_state(path, "pending")
             if item is not None:
@@ -149,8 +150,12 @@ class TranslationRunMixin:
     def on_phase_changed(self, key, kwargs):
         if self._cancelling:
             return
-        # a phase (generating a page, saving) replaces the "translating" base
-        self._status_parts = [(key, kwargs)]
+        # a phase (generating a page, saving) replaces the "translating" base,
+        # but not the detected language: that belongs to the file rather than
+        # to the phase, and detection happens before the first phase, so
+        # dropping it here left the notice on screen for a few milliseconds
+        detected = [part for part in self._status_parts if part[0] == "detected"]
+        self._status_parts = [(key, kwargs)] + detected
         self.refresh_status()
 
     def show_cancelling(self):
@@ -228,16 +233,31 @@ class TranslationRunMixin:
         self._set_file_state(self.worker.files[index], "skipped")
         self.results.append(("skipped", out_path))
 
-    def on_file_cache_stats(self, index, file_reused, batch_reused):
+    def on_file_cache_stats(self, index, file_reused, batch_reused, batch_segments):
         """Records how many segments a finished file reused from the shared
-        cache, as a tooltip on its Status cell, and the running batch total
-        on the file-list summary."""
+        cache, as a tooltip on its Status cell, and the running batch totals
+        on the file-list summary. The batch figures are what the summary
+        reports once the run ends."""
         item = self._item_for_path(self.worker.files[index])
         if item is not None:
             item.setData(STATUS_COL, FILE_REUSED_ROLE, file_reused)
             self._render_cache_tooltip(item)
         self._batch_reused = batch_reused
+        self._batch_segments = batch_segments
         self._render_batch_cache_tooltip()
+
+    def cache_summary_line(self):
+        """The batch's cache reuse as a line for the final summary, or None
+        when nothing was reused (the cache switched off, or a first run with
+        no repeated text, where a "0 of 340" line would be pure noise)."""
+        if not self._batch_reused or not self._batch_segments:
+            return None
+        return tr(
+            "cache_reused_summary",
+            reused=self._batch_reused,
+            total=self._batch_segments,
+            percent=round(100 * self._batch_reused / self._batch_segments),
+        )
 
     def _render_cache_tooltip(self, item):
         reused = item.data(STATUS_COL, FILE_REUSED_ROLE)
@@ -281,5 +301,11 @@ class TranslationRunMixin:
         if errors:
             lines.append(tr("errors_header"))
             lines.extend(f"  ✗ {e}" for e in errors)
+        # last line, and only when there is something to report: how much of
+        # the work the cache answered. A cancelled run keeps it — the segments
+        # it did reuse are as real as the pages it produced
+        cache_line = self.cache_summary_line()
+        if cache_line is not None and lines:
+            lines.append(cache_line)
         self.status.setText("\n".join(lines) or tr("ready"))
         self.clear_status_btn.setVisible(bool(lines))
