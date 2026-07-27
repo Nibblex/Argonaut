@@ -49,6 +49,17 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.7.0" date="2026-07-26">
+      <description>
+        <p>Translated PDFs are written several times faster — a 528-page book
+        went from four and a half minutes to twelve seconds — and come out
+        smaller, because Argonaut now lays the translation into the page
+        itself instead of asking the PDF library to do it paragraph by
+        paragraph. Text is shrunk slightly less to fit its box, and books
+        with crop marks no longer lose the paragraphs that fell outside the
+        page.</p>
+      </description>
+    </release>
     <release version="1.6.0" date="2026-07-26">
       <description>
         <p>Every batch is now recorded in a translation history that can be
