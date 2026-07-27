@@ -211,6 +211,8 @@ All modules live in the `src/argonaut/` package:
   `history_dialog.py`.
 - `worker.py` — thread that translates the file list and emits progress signals.
 - `pdf.py` — fixed PDF translator (paragraphs, progress, cancellation).
+- `typesetting.py` — lays the translation back into the page: line breaking,
+  fitting each paragraph to its box, and a font per script.
 - `translation.py` — language detection, supported formats and the
   progress/cache wrapper.
 - `history.py` — persistent record of the files each batch translated.
