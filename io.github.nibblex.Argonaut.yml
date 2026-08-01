@@ -50,3 +50,20 @@ modules:
     sources:
       - type: dir
         path: .
+        # the build needs pyproject.toml, src/, data/, README.md and LICENSE.
+        # flatpak-builder already leaves its own state and output directories
+        # out, but everything else in the checkout is copied in, and `build/`
+        # among it: pip runs here with --no-build-isolation, so a stale
+        # build/lib from a host `python -m build` is sitting where setuptools
+        # looks. The rest is version control and local scratch files, which
+        # have no business in a build sandbox either.
+        skip:
+          - .git
+          - .github
+          - build
+          - dist
+          - tests
+          - .pytest_cache
+          - .coverage
+          - pendientes
+          - traducciones
