@@ -73,17 +73,87 @@ class EngineMixin:
         self.reload_language_combos()
         self._refresh_ready_state()
 
+    def translate_blocker(self):
+        """What stands between the window and a translation, as the message
+        that says so, or None when nothing does.
+
+        One answer serves both the Translate button and the status line: a
+        greyed-out button with "Ready." under it is the window refusing
+        without saying why, and two separate rules would eventually disagree
+        about which of them was right.
+
+        With the source left on "Detect language" the pair is only known once
+        each file has been read, so there is nothing to answer for here beyond
+        the target; a file that turns out to have no model fails as that file,
+        which is the only place it can be known.
+
+        The engine is asked rather than the installed packages listed, and the
+        two are not the same question. Argos composes a pair it has no package
+        for out of the ones it has, through English: with the usual en↔X set
+        installed, Albanian to Spanish is a CompositeTranslation that really
+        does translate, and only a language with no route at all comes back
+        None. NLLB, being one model for every pair, never does.
+        """
+        if not self.languages:
+            return "no_packages", {}
+        if not self.file_list.topLevelItemCount():
+            return "no_files_msg", {}
+        src = self.from_combo.currentData()
+        dst = self.to_combo.currentData()
+        if src is None:  # automatic detection
+            return None
+        if src is dst:
+            return "same_language", {}
+        if src.get_translation(dst) is None:
+            return "no_model_msg", {"src": lang_text(src), "dst": lang_text(dst)}
+        return None
+
+    def can_translate(self):
+        return self.translate_blocker() is None
+
+    def pivot_note(self):
+        """The warning for a pair that only reaches its target through a third
+        language, or None for one that goes straight there.
+
+        Argos composes a pair it has no package for out of two that it has, so
+        the text is translated twice and what the first pass loses the second
+        cannot put back. It does translate, so this is a note rather than a
+        refusal — but left unsaid, the detour reads as the engine being bad at
+        the language. NLLB never lands here: one model covers every pair.
+        """
+        src = self.from_combo.currentData()
+        dst = self.to_combo.currentData()
+        if src is None or dst is None or src is dst:
+            return None
+        translation = src.get_translation(dst)
+        if not isinstance(translation, argostranslate.translate.CompositeTranslation):
+            return None
+        return "pivot_pair", {
+            "src": lang_text(src),
+            "dst": lang_text(dst),
+            # the language it goes through, named by the hop that ends there
+            "via": lang_text(translation.t1.to_lang),
+        }
+
+    def can_swap_languages(self):
+        """Swapping needs a source language to swap. On "Detect language"
+        there is none to move across, and the button did nothing at all —
+        which looked like it was broken rather than inapplicable."""
+        return self.from_combo.currentIndex() > 0
+
     def _refresh_ready_state(self):
-        """Reflects whether a translation can start with the installed
-        languages. A no-op while a worker runs (the busy state owns the
-        controls) and never clobbers a finished batch's summary."""
+        """Reflects whether a translation can start, and why not when it
+        cannot. A no-op while a worker runs (the busy state owns the controls)
+        and never clobbers a finished batch's summary."""
         if self.running_workers():
             return
-        self.translate_btn.setEnabled(bool(self.languages))
+        self.swap_btn.setEnabled(self.can_swap_languages())
+        blocker = self.translate_blocker()
+        self.translate_btn.setEnabled(blocker is None)
         if not self.clear_status_btn.isVisible():
-            self.status.setText(
-                tr("ready") if self.languages else tr("no_packages")
-            )
+            # a reason it cannot run outranks a caveat about how it will
+            key, kwargs = blocker or self.pivot_note() or ("ready", {})
+            self.status.setText(tr(key, **kwargs))
 
     def change_backend(self, name):
         if name == self.backend:
@@ -235,7 +305,6 @@ class EngineMixin:
 
     def on_download_finished(self, ok, error):
         self.set_busy(False)
-        self.translate_btn.setEnabled(bool(self.languages))
         if ok:
             self.apply_backend("nllb")
         else:

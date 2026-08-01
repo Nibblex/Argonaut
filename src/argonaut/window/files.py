@@ -39,6 +39,14 @@ class FileListMixin:
         )
         self.add_paths(paths)
 
+    def add_folder(self):
+        """Adds every supported document in a folder, walking it the way a
+        dropped folder is walked: the two are the same act, and picking a
+        hundred files by hand in the file dialog is not."""
+        path = QFileDialog.getExistingDirectory(self, tr("select_folder"))
+        if path:
+            self.add_paths(self.expand_dirs([path]))
+
     def paths(self):
         return [
             self.file_list.topLevelItem(i).data(NAME_COL, FILE_PATH_ROLE)
@@ -134,6 +142,16 @@ class FileListMixin:
             tr("batch_total", count=count, size=human_size(total))
         )
 
+    def refresh_file_buttons(self):
+        """Remove and Open act on the selected rows and Clear on all of them,
+        so with nothing selected, or nothing in the list, they have nothing to
+        do. Driven by the list's own signals rather than by the calls that add
+        and remove rows, which is what keeps it from going stale."""
+        selected = bool(self.file_list.selectedItems())
+        self.remove_btn.setEnabled(selected)
+        self.open_file_btn.setEnabled(selected)
+        self.clear_btn.setEnabled(self.file_list.topLevelItemCount() > 0)
+
     def clear_files(self):
         self.file_list.clear()
         self.update_total_size()
@@ -150,10 +168,18 @@ class FileListMixin:
         self.update_total_size()
 
     def dragEnterEvent(self, event):
+        """Drops land anywhere on the window, but the file list is where they
+        end up, so that is what lights up while the drag is overhead."""
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
+            self.file_list.set_drag_active(True)
+
+    def dragLeaveEvent(self, event):
+        self.file_list.set_drag_active(False)
+        super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
+        self.file_list.set_drag_active(False)
         self.add_paths(
             self.expand_dirs(
                 url.toLocalFile()

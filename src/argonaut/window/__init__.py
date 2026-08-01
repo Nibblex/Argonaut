@@ -39,6 +39,7 @@ from argonaut.window.file_list import (
     STATUS_STATES,
     TYPE_COL,
     FileItem,
+    FileTree,
     human_size,
 )
 from argonaut.window.main_window import MainWindow
@@ -59,6 +60,7 @@ __all__ = [
     "STATUS_STATES",
     "TYPE_COL",
     "FileItem",
+    "FileTree",
     "MainWindow",
     "human_size",
 ]

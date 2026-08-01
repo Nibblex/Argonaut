@@ -2,10 +2,11 @@ import os
 import re
 
 import pytest
-from PyQt5.QtWidgets import QFileDialog, QMessageBox
+from PyQt5.QtWidgets import QFileDialog, QMessageBox, QPushButton
 
 import argonaut.window
-from argonaut.i18n import tr
+from argonaut.i18n import LANGUAGES, set_language, tr
+from argonaut.translation import SUPPORTED_EXTS
 from argonaut.window import (
     FOLDER_COL,
     HIDEABLE_COLS,
@@ -417,6 +418,7 @@ def test_cancelling_keeps_the_phase_next_to_the_message(window):
 def test_language_choice_is_locked_while_translating(window):
     """The batch keeps the pair it started with, so an editable combo would
     have the window claim a translation that is not the one running."""
+    window.from_combo.setCurrentIndex(1)  # a source, so swapping applies at all
     window.set_busy(True)
     assert not window.from_combo.isEnabled()
     assert not window.to_combo.isEnabled()
@@ -660,26 +662,451 @@ def test_open_output_dir_opens_only_a_chosen_folder(window, monkeypatch, tmp_pat
     assert opened == [str(tmp_path)]
 
 
+def url_mime(path):
+    from PyQt5.QtCore import QMimeData, QUrl
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path))])
+    return mime
+
+
+def drag_enter(window, mime):
+    """Delivers a drag entering the window and returns the event, so a test
+    can see whether it was taken."""
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtGui import QDragEnterEvent
+
+    event = QDragEnterEvent(
+        QPoint(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier
+    )
+    window.dragEnterEvent(event)
+    return event
+
+
+def drop_on(window, mime):
+    """Delivers the drop that follows the drag."""
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtGui import QDropEvent
+
+    window.dropEvent(
+        QDropEvent(QPoint(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    )
+
+
 def test_drag_and_drop_adds_local_files(window, tmp_path):
-    from PyQt5.QtCore import QMimeData, QPoint, QUrl, Qt
-    from PyQt5.QtGui import QDragEnterEvent, QDropEvent
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    mime = url_mime(doc)
+
+    assert drag_enter(window, mime).isAccepted()
+    drop_on(window, mime)
+    assert window.paths() == [str(doc)]
+
+
+# --- the empty list ---
+
+def test_the_empty_list_explains_itself_instead_of_heading_nothing(window):
+    """An empty table is a blank box under a row of column headings that head
+    no columns: until there is a file, the list carries an icon, the message
+    and the formats it takes instead."""
+    tree = window.file_list
+    assert not tree.placeholder.isHidden()
+    assert tree.isHeaderHidden()
+    assert tree.hint.text() == tr("hint")
+    assert not tree.drop_icon.pixmap().isNull()
+    assert " ".join(SUPPORTED_EXTS) in tree.formats_hint.text()
+
+
+def test_the_placeholder_gives_way_to_the_rows(window, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    assert window.file_list.placeholder.isHidden()
+    assert not window.file_list.isHeaderHidden()
+
+
+def test_the_placeholder_returns_with_the_last_file_removed(window, tmp_path):
+    tree = window.file_list
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    tree.setCurrentItem(tree.topLevelItem(0))
+    window.remove_selected()
+    assert not tree.placeholder.isHidden()
+    assert tree.isHeaderHidden()
+
+
+def test_clearing_the_list_returns_the_placeholder(window, tmp_path):
+    """clear() resets the model rather than removing the rows one by one,
+    which reports through a different signal: the empty state follows both."""
+    tree = window.file_list
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    assert tree.placeholder.isHidden()
+    window.clear_files()
+    assert not tree.placeholder.isHidden()
+    assert tree.isHeaderHidden()
+
+
+def test_the_placeholder_carries_no_button_of_its_own(window):
+    """Adding files is the row of buttons below the list; the placeholder
+    explains the empty box rather than duplicating one of them inside it."""
+    tree = window.file_list
+    assert not hasattr(tree, "add_btn")
+    assert not tree.placeholder.findChildren(QPushButton)
+
+
+def test_the_placeholder_follows_the_interface_language(window):
+    set_language("es")
+    window.retranslate_ui()
+    tree = window.file_list
+    assert tree.hint.text() == tr("hint") == "Arrastra archivos o carpetas aquí"
+    assert tree.formats_hint.text() == tr(
+        "hint_formats", formats=" ".join(SUPPORTED_EXTS)
+    )
+
+
+def test_a_short_list_sheds_its_parts_rather_than_clipping_the_message(window, qtbot):
+    """The list is one widget among many and at the smallest window it is
+    barely three rows tall. Centred in it, a placeholder that does not fit
+    loses its top and bottom, cutting the message in half.
+
+    Needs a shown window: a hidden one never lays its viewport out, so there
+    is no height to fit anything to.
+    """
+    tree = window.file_list
+    window.resize(900, 900)
+    with qtbot.waitExposed(window):
+        window.show()
+
+    parts = (tree.drop_icon, tree.formats_hint)
+    seen = []
+    for height in (400, 150, 60):
+        tree.resize(tree.width(), height)
+        seen.append([not widget.isHidden() for widget in parts])
+        assert not tree.hint.isHidden()  # the message itself never goes
+
+    assert seen[0] == [True, True]  # room for the whole placeholder
+    assert seen[-1] == [False, False]  # room for the message alone
+    # each step only ever takes parts away, in that order, never puts them back
+    for before, after in zip(seen, seen[1:]):
+        assert all(was >= now for was, now in zip(before, after))
+
+
+# --- drag feedback ---
+
+def test_dragging_files_over_the_window_lights_up_the_list(window, tmp_path):
+    """Without it the only sign that a drop will land is the cursor, which
+    looks the same over a window that would refuse it."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    mime = url_mime(doc)
+
+    assert drag_enter(window, mime).isAccepted()
+    assert window.file_list._drag_active
+
+    drop_on(window, mime)
+    assert not window.file_list._drag_active
+
+
+def test_the_highlight_goes_out_when_the_drag_leaves(window, tmp_path):
+    """A drag carried back out of the window leaves nothing behind: without
+    this the list stays lit until the next drop."""
+    from PyQt5.QtGui import QDragLeaveEvent
 
     doc = tmp_path / "doc.txt"
     doc.write_text("x")
+    drag_enter(window, url_mime(doc))
+    assert window.file_list._drag_active
+
+    window.dragLeaveEvent(QDragLeaveEvent())
+    assert not window.file_list._drag_active
+
+
+def test_a_drag_carrying_no_files_does_not_light_the_list(window):
+    """Dragging selected text over the window is not a drop it can take, so
+    it must not promise one."""
+    from PyQt5.QtCore import QMimeData
+
     mime = QMimeData()
-    mime.setUrls([QUrl.fromLocalFile(str(doc))])
+    mime.setText("not a file")
+    assert not drag_enter(window, mime).isAccepted()
+    assert not window.file_list._drag_active
 
-    enter = QDragEnterEvent(
-        QPoint(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier
-    )
-    window.dragEnterEvent(enter)
-    assert enter.isAccepted()
 
-    drop = QDropEvent(
-        QPoint(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier
+def test_the_highlight_is_actually_painted(window, qtbot, tmp_path):
+    """The flag is only worth setting if it reaches the screen: with a drag
+    overhead the list has to come out looking different. Needs a shown
+    window, since a hidden one never lays its viewport out to paint."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    window.resize(800, 600)  # at the minimum size the list has no height to paint
+    with qtbot.waitExposed(window):
+        window.show()
+    tree = window.file_list
+
+    quiet = tree.grab().toImage()
+    drag_enter(window, url_mime(doc))
+    assert tree.grab().toImage() != quiet
+
+
+# --- buttons follow what there is to act on ---
+
+def test_an_empty_list_leaves_its_buttons_disabled(window):
+    """Remove, Clear and Translate all act on files: with none loaded there is
+    nothing for any of them to do, and offering them says otherwise."""
+    assert not window.remove_btn.isEnabled()
+    assert not window.open_file_btn.isEnabled()
+    assert not window.clear_btn.isEnabled()
+    assert not window.translate_btn.isEnabled()
+    assert window.add_btn.isEnabled()  # the one way out of an empty list
+
+
+def test_adding_a_file_enables_clear_and_translate_but_not_remove(window, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    assert window.clear_btn.isEnabled()
+    assert window.translate_btn.isEnabled()
+    assert not window.remove_btn.isEnabled()  # nothing selected yet
+    assert not window.open_file_btn.isEnabled()
+
+
+def test_selecting_a_row_enables_remove_and_open(window, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    tree = window.file_list
+    tree.setCurrentItem(tree.topLevelItem(0))
+    assert window.remove_btn.isEnabled()
+    assert window.open_file_btn.isEnabled()
+    tree.clearSelection()
+    assert not window.remove_btn.isEnabled()
+    assert not window.open_file_btn.isEnabled()
+
+
+def test_emptying_the_list_disables_them_again(window, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    tree = window.file_list
+    tree.setCurrentItem(tree.topLevelItem(0))
+    window.clear_files()
+    assert not window.clear_btn.isEnabled()
+    assert not window.remove_btn.isEnabled()
+    assert not window.translate_btn.isEnabled()
+
+
+def test_translate_is_off_for_a_language_with_itself(window, tmp_path):
+    """The pair is answered for before the run rather than after: pressing
+    Translate only to be told the two are the same is a wasted press."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    window.from_combo.setCurrentIndex(1)  # English
+    window.to_combo.setCurrentIndex(0)  # English
+    assert not window.translate_btn.isEnabled()
+
+
+def test_translate_is_off_for_a_pair_with_no_model(window, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    window.from_combo.setCurrentIndex(2)  # Spanish: no es->en model registered
+    window.to_combo.setCurrentIndex(0)  # English
+    assert not window.translate_btn.isEnabled()
+    window.from_combo.setCurrentIndex(1)  # English -> Spanish is installed
+    window.to_combo.setCurrentIndex(1)
+    assert window.translate_btn.isEnabled()
+
+
+def test_detect_language_leaves_translate_on(window, tmp_path):
+    """With the source detected per file the pair is not known until the file
+    has been read, so the button cannot answer for it and must not pretend
+    to; a file it turns out to have no model for fails as that file."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    window.from_combo.setCurrentIndex(0)  # Detect language
+    window.to_combo.setCurrentIndex(0)  # English, which no installed pair reaches
+    assert window.translate_btn.isEnabled()
+
+
+def test_swap_is_off_while_the_source_is_detected(window):
+    """There is no source language to move across, and the button was already
+    a no-op there: it read as broken rather than as inapplicable."""
+    assert window.from_combo.currentIndex() == 0  # Detect language
+    assert not window.swap_btn.isEnabled()
+
+    window.from_combo.setCurrentIndex(1)  # English
+    assert window.swap_btn.isEnabled()
+
+    window.from_combo.setCurrentIndex(0)
+    assert not window.swap_btn.isEnabled()
+
+
+def test_the_status_says_why_translate_is_off(window, tmp_path):
+    """A greyed-out button with "Ready." under it is the window refusing
+    without saying why. Each reason it refuses for names itself, and the
+    strings are the ones the pre-flight dialogs already use."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+
+    assert window.status.text() == tr("no_files_msg")
+
+    window.add_paths([str(doc)])
+    assert window.status.text() == tr("ready")
+
+    window.from_combo.setCurrentIndex(1)  # English
+    window.to_combo.setCurrentIndex(0)  # English
+    assert window.status.text() == tr("same_language")
+
+    window.from_combo.setCurrentIndex(2)  # Spanish: no es->en model registered
+    assert window.status.text() == tr("no_model_msg", src="Spanish", dst="English")
+
+    window.from_combo.setCurrentIndex(1)  # English -> Spanish is installed
+    window.to_combo.setCurrentIndex(1)
+    assert window.status.text() == tr("ready")
+
+
+def test_the_reason_and_the_button_cannot_disagree(window, tmp_path):
+    """Both read the same answer, so a disabled button always has a reason
+    and an enabled one never shows a complaint."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    for step in (
+        lambda: None,
+        lambda: window.add_paths([str(doc)]),
+        lambda: window.from_combo.setCurrentIndex(1),
+        lambda: window.to_combo.setCurrentIndex(0),
+        lambda: window.from_combo.setCurrentIndex(2),
+        lambda: window.clear_files(),
+    ):
+        step()
+        blocked = window.translate_blocker() is not None
+        assert window.translate_btn.isEnabled() is not blocked
+        assert (window.status.text() != tr("ready")) is blocked
+
+
+@pytest.fixture
+def pivot_window(qtbot, monkeypatch):
+    """A window whose Albanian reaches Spanish only through English, which is
+    what Argos hands back with the usual en↔X packages and no sq→es one."""
+    from argostranslate.translate import CompositeTranslation
+
+    english = FakeLanguage("en", "English")
+    spanish = FakeLanguage("es", "Spanish")
+    albanian = FakeLanguage("sq", "Albanian")
+    english._translations["es"] = FakeTranslation(english, spanish)
+    albanian._translations["en"] = FakeTranslation(albanian, english)
+    albanian._translations["es"] = CompositeTranslation(
+        albanian.get_translation(english), english.get_translation(spanish)
     )
-    window.dropEvent(drop)
-    assert window.paths() == [str(doc)]
+    monkeypatch.setattr(
+        argonaut.window.argostranslate.translate,
+        "get_installed_languages",
+        fake_installed_languages([albanian, english, spanish]),
+    )
+    win = MainWindow()
+    qtbot.addWidget(win)
+    win.add_paths(["/a/doc.txt"])
+    return win
+
+
+def test_a_pair_reached_through_a_third_language_says_so(pivot_window):
+    """Argos composes a pair it has no package for out of two that it has, so
+    the text is translated twice. Left unsaid, the detour reads as the engine
+    being bad at the language rather than as a hop nobody mentioned."""
+    win = pivot_window
+    win.from_combo.setCurrentIndex(1)  # Albanian
+    win.to_combo.setCurrentIndex(2)  # Spanish
+    assert win.translate_btn.isEnabled()  # it does translate: a note, not a bar
+    assert win.status.text() == tr(
+        "pivot_pair", src="Albanian", dst="Spanish", via="English"
+    )
+
+
+def test_a_direct_pair_says_nothing(pivot_window):
+    win = pivot_window
+    win.from_combo.setCurrentIndex(2)  # English
+    win.to_combo.setCurrentIndex(2)  # Spanish: a package of its own
+    assert win.translate_btn.isEnabled()
+    assert win.status.text() == tr("ready")
+
+
+def test_detected_source_cannot_be_told_it_pivots(pivot_window):
+    """The pair is not known until each file is read, so there is no detour
+    to warn about yet."""
+    win = pivot_window
+    win.from_combo.setCurrentIndex(0)  # Detect language
+    win.to_combo.setCurrentIndex(2)  # Spanish
+    assert win.status.text() == tr("ready")
+
+
+def test_a_blocked_pair_reports_that_rather_than_the_detour(pivot_window):
+    """A reason it cannot run outranks a caveat about how it would."""
+    win = pivot_window
+    win.from_combo.setCurrentIndex(1)  # Albanian
+    win.to_combo.setCurrentIndex(2)  # Spanish, which it reaches through English
+    assert win.status.text() != tr("ready")
+    win.clear_files()
+    assert win.status.text() == tr("no_files_msg")
+
+
+def test_no_packages_outranks_the_rest(window, monkeypatch, tmp_path):
+    """With nothing installed, telling the user to add a document sends them
+    the wrong way: the packages are what is missing."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    window.languages = []
+    window._refresh_ready_state()
+    assert not window.translate_btn.isEnabled()
+    assert window.status.text() == tr("no_packages")
+
+
+def test_clearing_a_summary_restores_the_reason_not_ready(window):
+    """The button that dismisses a finished batch's summary used to write
+    "Ready." over it whatever the window could actually do."""
+    window.status.setText("a summary")
+    window.clear_status_btn.setVisible(True)
+    window.clear_status()
+    assert window.clear_status_btn.isHidden()
+    assert window.status.text() == tr("no_files_msg")  # the list is empty
+
+
+def test_finishing_a_run_does_not_switch_translate_back_on_blindly(window, tmp_path):
+    """Leaving the busy state used to enable it regardless; if the files went
+    away while the batch ran there is nothing left for it to do."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    assert window.translate_btn.isEnabled()
+
+    window.set_busy(True)
+    assert not window.translate_btn.isEnabled()
+    window.clear_files()
+    window.set_busy(False)
+    assert not window.translate_btn.isEnabled()
+
+
+def test_the_drop_icon_is_enlarged_when_the_style_ships_a_small_one():
+    """QIcon.pixmap() never enlarges beyond the largest variant a style has,
+    so a style offering only a 16-pixel folder would otherwise leave a
+    16-pixel icon adrift in the middle of the placeholder."""
+    from PyQt5.QtGui import QIcon, QPixmap
+
+    from argonaut.window.file_list import DROP_ICON_SIZE, drop_pixmap
+
+    class TinyIconStyle:
+        def standardIcon(self, which):
+            small = QPixmap(16, 16)
+            small.fill()
+            return QIcon(small)
+
+    assert drop_pixmap(TinyIconStyle(), DROP_ICON_SIZE).width() == DROP_ICON_SIZE
 
 
 def test_each_translation_releases_the_previous_worker(window, qtbot, tmp_path):
@@ -791,6 +1218,7 @@ def test_failed_file_lands_in_the_results_and_the_status_column(window):
 
 def test_finished_summary_lists_results_and_errors(window):
     window.worker = None
+    window.add_paths(["/a/doc.txt"])  # a batch that finished had files in it
     window.results = [
         ("ok", "/a/doc_es.txt"),
         ("skipped", "/a/done_es.txt"),
@@ -1067,6 +1495,60 @@ def test_backend_switch_keeps_language_selection(window, monkeypatch):
     assert window.to_combo.currentText() == "Spanish"
 
 
+def test_nllb_offers_every_pair_it_speaks(qtbot, monkeypatch):
+    """NLLB-200 is one model that translates between any two of its languages
+    rather than a model per pair, so nothing can be missing for it.
+
+    That falls out of asking the engine — its get_translation answers for
+    every pair — rather than of a special case on the backend's name, which
+    is what a third engine would have to be added to.
+    """
+    from PyQt5.QtCore import QSettings
+
+    # the engine loads lazily, so its languages exist without a model on disk
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: True
+    )
+    QSettings().setValue("backend", "nllb")
+    win = MainWindow()
+    qtbot.addWidget(win)
+    assert win.backend == "nllb"
+    win.add_paths(["/a/doc.txt"])
+
+    sources = win.from_combo.count() - 1  # minus "Detect language"
+    assert sources > 20, "expected the full NLLB set, not a stand-in"
+    for fi in range(1, win.from_combo.count()):
+        win.from_combo.setCurrentIndex(fi)
+        for ti in range(win.to_combo.count()):
+            win.to_combo.setCurrentIndex(ti)
+            same = win.from_combo.currentData() is win.to_combo.currentData()
+            # the one pair that stays off is a language with itself, which no
+            # engine makes meaningful
+            assert win.translate_btn.isEnabled() is not same
+            assert (win.status.text() == tr("same_language")) is same
+
+
+def test_switching_to_nllb_unblocks_a_pair_argos_has_no_model_for(window, monkeypatch):
+    """The pair the Argos packages cannot serve is one NLLB translates like
+    any other, so changing engine has to lift the refusal with it."""
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: True
+    )
+    window.add_paths(["/a/doc.txt"])
+    window.from_combo.setCurrentIndex(2)  # Spanish: no es->en package
+    window.to_combo.setCurrentIndex(0)  # English
+    assert not window.translate_btn.isEnabled()
+
+    window.apply_backend("nllb")
+    assert window.from_combo.currentText() == "Spanish"  # the pair is kept
+    assert window.to_combo.currentText() == "English"
+    assert window.translate_btn.isEnabled()
+    assert window.status.text() == tr("ready")
+
+    window.apply_backend("argos")
+    assert not window.translate_btn.isEnabled()
+
+
 def test_backend_falls_back_to_argos_without_model(qtbot, langs, monkeypatch):
     from PyQt5.QtCore import QSettings
 
@@ -1112,6 +1594,7 @@ def test_backend_download_flow(window, monkeypatch, qtbot):
         ],
     )
 
+    window.add_paths(["/a/doc.txt"])  # Translate needs something to translate
     window.change_backend("nllb")
     qtbot.waitUntil(lambda: window.backend == "nllb", timeout=5000)
     qtbot.waitUntil(lambda: window.translate_btn.isEnabled(), timeout=5000)
@@ -1483,11 +1966,119 @@ def test_resource_indicator(window):
     assert window._resource_timer.interval() == 2000
 
 
+# --- the menu bar ---
+
+def test_the_menu_bar_leads_with_file_and_has_no_language_menu(window):
+    """"Language" at the top level named neither the documents the window is
+    about nor which of the two kinds of language it meant, with two combos
+    for the other kind right below it."""
+    titles = [a.text() for a in window.menuBar().actions()]
+    assert titles == [tr("menu_file"), tr("menu_settings"), tr("menu_help")]
+    assert tr("menu_language") not in titles
+
+
+def test_the_file_menu_carries_the_document_actions(window):
+    entries = [a.text() for a in window.file_menu.actions() if not a.isSeparator()]
+    assert entries == [
+        tr("file_add_files"),
+        tr("file_add_folder"),
+        tr("file_open_output"),
+        tr("file_quit"),
+    ]
+
+
+def test_preferences_gathers_what_the_user_likes(window):
+    """The theme sat between the CPU threads and the download units, as if
+    choosing a colour were part of configuring an engine. What the person
+    prefers is now one submenu, and how translation runs is the rest."""
+    prefs = [a.menu() for a in window.prefs_menu.actions() if a.menu()]
+    assert prefs == [window.lang_menu, window.theme_menu, window.speed_menu]
+
+    settings = [a.menu() for a in window.settings_menu.actions() if a.menu()]
+    assert settings[0] is window.prefs_menu
+    for gone in (window.lang_menu, window.theme_menu, window.speed_menu):
+        assert gone not in settings
+
+
+def test_the_interface_language_lives_under_preferences(window):
+    assert window.lang_menu.title() == tr("menu_language")
+    codes = [code for code, _ in LANGUAGES]
+    assert len(window.lang_menu.actions()) == len(codes)
+
+    spanish = window.lang_menu.actions()[codes.index("es")]
+    spanish.trigger()
+    assert window.settings_menu.title() == "&Configuración"
+    assert window.prefs_menu.title() == "&Preferencias"
+    assert window.lang_menu.title() == "I&dioma de la interfaz"
+
+
+def test_add_files_from_the_menu_opens_the_same_dialog(window, monkeypatch, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileNames",
+        staticmethod(lambda *a, **k: ([str(doc)], "")),
+    )
+    window.add_files_action.trigger()
+    assert window.paths() == [str(doc)]
+
+
+def test_add_folder_walks_it_the_way_a_dropped_one_is(window, monkeypatch, tmp_path):
+    """Picking a hundred documents by hand in the file dialog is not the same
+    act as handing over the folder they are in."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.txt").write_text("x")
+    (tmp_path / "sub" / "b.docx").write_text("x")
+    (tmp_path / "sub" / "notes.md").write_text("x")  # unsupported: left out
+    monkeypatch.setattr(
+        QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(tmp_path))
+    )
+    window.add_folder_action.trigger()
+    assert window.paths() == [
+        str(tmp_path / "a.txt"),
+        str(tmp_path / "sub" / "b.docx"),
+    ]
+
+
+def test_add_folder_cancelled_adds_nothing(window, monkeypatch):
+    monkeypatch.setattr(
+        QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: "")
+    )
+    window.add_folder_action.trigger()
+    assert window.paths() == []
+
+
+def test_open_output_folder_waits_for_a_folder_to_open(window, tmp_path):
+    window.file_menu.aboutToShow.emit()
+    assert not window.open_output_action.isEnabled()
+
+    window.output_dir = str(tmp_path)
+    window.file_menu.aboutToShow.emit()
+    assert window.open_output_action.isEnabled()
+
+
+def test_quit_closes_the_window(window, qtbot):
+    """The shortcut is asserted as the keys themselves: QKeySequence.Quit is
+    empty on X11 and Wayland, so comparing against it would hold just as well
+    for an action that has no shortcut at all."""
+    assert window.quit_action.shortcut().toString() == "Ctrl+Q"
+    with qtbot.waitExposed(window):
+        window.show()
+    assert window.isVisible()
+    window.quit_action.trigger()
+    assert not window.isVisible()
+
+
 def test_settings_menu_groups_engine_and_threads(window):
     assert window.settings_menu.title() == tr("menu_settings")
     actions = window.settings_menu.actions()
-    assert actions[0].menu() is window.engine_menu
-    assert actions[1].menu() is window.threads_menu
+    # by submenu rather than by index: the separators between the groups are
+    # actions too, and which slot each lands in is not what this is about
+    submenus = [a.menu() for a in actions if a.menu() is not None]
+    assert submenus[:3] == [
+        window.prefs_menu, window.engine_menu, window.threads_menu
+    ]
     assert window.pkg_install_action in actions
     assert window.nllb_remove_action in actions
     window.change_language("es")
@@ -1569,6 +2160,7 @@ def test_installed_packages_refresh_the_window(qtbot, monkeypatch):
     )
     win = MainWindow()
     qtbot.addWidget(win)
+    win.add_paths(["/a/doc.txt"])  # so the packages are the only thing missing
     assert not win.translate_btn.isEnabled()
 
     monkeypatch.setattr(

@@ -11,16 +11,19 @@
   <description>
     <p>
       Argonaut is a minimalist document translator. Translation runs
-      entirely on your computer using Argos Translate; your documents
-      never leave your machine.
+      entirely on your computer, with Argos Translate or the heavier and
+      more accurate NLLB-200; your documents never leave your machine.
     </p>
     <p>Features:</p>
     <ul>
       <li>Batch translation with automatic language detection per file</li>
       <li>Language packages installed and removed from the application itself</li>
       <li>PDF translation that preserves the layout, with real progress and cancellation</li>
+      <li>Repeated segments translated once and reused across files and sessions</li>
+      <li>A history of every document translated, browsable and reopenable</li>
       <li>Supports .txt, .docx, .odt, .odp, .pptx, .epub, .html, .srt and .pdf</li>
-      <li>Interface in English, Spanish, French, German, Italian and Portuguese</li>
+      <li>Interface in English, Spanish, French, German, Italian, Portuguese,
+      Russian, Chinese, Japanese, Dutch, Polish and Turkish</li>
     </ul>
   </description>
 
@@ -49,15 +52,35 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
-    <release version="1.7.2" date="2026-07-26">
+    <release version="1.8.0" date="2026-08-01">
       <description>
-        <p>Maintenance release built from the current development tree:
-        improves translation flow and history handling, updates multiple
-        interface texts and localizations, and includes refinements in
-        worker execution and related tests.</p>
+        <p>The menu bar now opens on File, which carries the document
+        actions: adding files, adding a whole folder at once, opening the
+        output folder and quitting. What the interface looks like — its
+        language, its theme and the units it counts downloads in — is
+        gathered under Settings, Preferences, apart from how translation
+        is carried out.</p>
+        <p>An empty file list says what it takes instead of showing bare
+        column headers, and dragging documents over the window outlines
+        where they will land. The Translate button no longer refuses in
+        silence: the line above it names what is missing, whether that is
+        the documents, a language package or a model for the chosen pair.
+        A pair that can only be reached through a third language now says
+        so, rather than leaving the loss of accuracy to look like the
+        engine being bad at the language.</p>
       </description>
     </release>
-    <release version="1.7.1" date="2026-07-27">
+    <release version="1.7.2" date="2026-07-27">
+      <description>
+        <p>The translation history now shows the folder each document came
+        from, so two files of the same name can be told apart, and how much
+        of each one the cache answered, in a column that sorts by the rate
+        itself. The end of a batch reports that same figure for the whole
+        run, and the language detected for a file no longer vanishes from
+        the status line the moment translation starts.</p>
+      </description>
+    </release>
+    <release version="1.7.1" date="2026-07-26">
       <description>
         <p>Fixes a fault in 1.7.0: a paragraph translated into Arabic or
         Hebrew had the Latin words and figures inside it turned round with
