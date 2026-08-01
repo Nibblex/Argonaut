@@ -52,6 +52,24 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.8.0" date="2026-08-01">
+      <description>
+        <p>The menu bar now opens on File, which carries the document
+        actions: adding files, adding a whole folder at once, opening the
+        output folder and quitting. What the interface looks like — its
+        language, its theme and the units it counts downloads in — is
+        gathered under Settings, Preferences, apart from how translation
+        is carried out.</p>
+        <p>An empty file list says what it takes instead of showing bare
+        column headers, and dragging documents over the window outlines
+        where they will land. The Translate button no longer refuses in
+        silence: the line above it names what is missing, whether that is
+        the documents, a language package or a model for the chosen pair.
+        A pair that can only be reached through a third language now says
+        so, rather than leaving the loss of accuracy to look like the
+        engine being bad at the language.</p>
+      </description>
+    </release>
     <release version="1.7.2" date="2026-07-27">
       <description>
         <p>The translation history now shows the folder each document came
