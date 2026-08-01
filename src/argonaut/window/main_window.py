@@ -5,7 +5,7 @@ import os
 
 import psutil
 from PyQt5.QtCore import QSettings, QTimer, QUrl, Qt
-from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtGui import QDesktopServices, QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
@@ -91,14 +91,71 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
 
         self.languages = self.load_languages()
 
-        # --- interface language menu ---
-        self.lang_menu = self.menuBar().addMenu("")
-        self._fill_radio_menu(
-            self.lang_menu, LANGUAGES, current_language(), self.change_language
+        # --- file menu ---
+        # the documents are what the application is about, so they get the
+        # first menu; before this the bar opened on "Language", which named
+        # neither the files nor which of the two kinds of language it meant
+        self.file_menu = self.menuBar().addMenu("")
+        self.add_files_action = QAction("", self)
+        self.add_files_action.triggered.connect(self.add_files)
+        self.file_menu.addAction(self.add_files_action)
+        self.add_folder_action = QAction("", self)
+        self.add_folder_action.triggered.connect(self.add_folder)
+        self.file_menu.addAction(self.add_folder_action)
+        self.file_menu.addSeparator()
+        self.open_output_action = QAction("", self)
+        self.open_output_action.triggered.connect(self.open_output_dir)
+        self.file_menu.addAction(self.open_output_action)
+        self.file_menu.addSeparator()
+        self.quit_action = QAction("", self)
+        # spelled out rather than QKeySequence.Quit, which Qt binds on macOS
+        # and leaves empty on X11 and Wayland — where this application runs,
+        # and where Ctrl+Q is the convention anyway
+        self.quit_action.setShortcut(QKeySequence("Ctrl+Q"))
+        self.quit_action.triggered.connect(self.close)
+        self.file_menu.addAction(self.quit_action)
+        # only openable once there is a folder of one's own to open, like the
+        # button beside the output row
+        self.file_menu.aboutToShow.connect(
+            lambda: self.open_output_action.setEnabled(self.output_dir is not None)
         )
 
         # --- settings menu ---
         self.settings_menu = self.menuBar().addMenu("")
+
+        # Preferences holds what the person using the window likes; the rest
+        # of Settings holds how translation is carried out. They were mixed
+        # together, so the theme sat between the CPU threads and the download
+        # units as if choosing a colour were part of configuring an engine.
+        # The interface language belongs here too rather than in a menu of its
+        # own: at the top level "Language" read as the language being
+        # translated, which is what the two combos are for
+        self.prefs_menu = self.settings_menu.addMenu("")
+        self.lang_menu = self.prefs_menu.addMenu("")
+        self._fill_radio_menu(
+            self.lang_menu, LANGUAGES, current_language(), self.change_language
+        )
+        self.theme_menu = self.prefs_menu.addMenu("")
+        self._theme_options = [(name, f"theme_{name}") for name in THEMES]
+        self.theme_actions = self._fill_radio_menu(
+            self.theme_menu,
+            [(name, "") for name in THEMES],  # labels: retranslate_ui
+            current_theme(),
+            self.change_theme,
+        )
+        self.speed_menu = self.prefs_menu.addMenu("")
+        self._speed_options = [
+            ("bits", "speed_units_bits"),
+            ("bytes", "speed_units_bytes"),
+        ]
+        self.speed_actions = self._fill_radio_menu(
+            self.speed_menu,
+            [(value, "") for value, _ in self._speed_options],  # retranslate_ui
+            speed_units(),
+            self.change_speed_units,
+        )
+
+        self.settings_menu.addSeparator()
         self.engine_menu = self.settings_menu.addMenu("")
         engine_group = QActionGroup(self)
         engine_group.setExclusive(True)
@@ -127,25 +184,6 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
             [(value, "") for value, _ in self._quality_options],  # retranslate_ui
             quality_mode(),
             self.change_quality_mode,
-        )
-        self.theme_menu = self.settings_menu.addMenu("")
-        self._theme_options = [(name, f"theme_{name}") for name in THEMES]
-        self.theme_actions = self._fill_radio_menu(
-            self.theme_menu,
-            [(name, "") for name in THEMES],  # labels: retranslate_ui
-            current_theme(),
-            self.change_theme,
-        )
-        self.speed_menu = self.settings_menu.addMenu("")
-        self._speed_options = [
-            ("bits", "speed_units_bits"),
-            ("bytes", "speed_units_bytes"),
-        ]
-        self.speed_actions = self._fill_radio_menu(
-            self.speed_menu,
-            [(value, "") for value, _ in self._speed_options],  # retranslate_ui
-            speed_units(),
-            self.change_speed_units,
         )
         self.settings_menu.addSeparator()
         self.cache_menu = self.settings_menu.addMenu("")
@@ -486,8 +524,14 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
     def retranslate_ui(self):
         """Applies the current language to all static texts."""
         self.setWindowTitle(tr("app_title"))
-        self.lang_menu.setTitle(tr("menu_language"))
+        self.file_menu.setTitle(tr("menu_file"))
+        self.add_files_action.setText(tr("file_add_files"))
+        self.add_folder_action.setText(tr("file_add_folder"))
+        self.open_output_action.setText(tr("file_open_output"))
+        self.quit_action.setText(tr("file_quit"))
         self.settings_menu.setTitle(tr("menu_settings"))
+        self.prefs_menu.setTitle(tr("menu_preferences"))
+        self.lang_menu.setTitle(tr("menu_language"))
         self.engine_menu.setTitle(tr("menu_engine"))
         self.nllb_action.setText(tr("engine_nllb"))
         self.threads_menu.setTitle(tr("menu_threads"))

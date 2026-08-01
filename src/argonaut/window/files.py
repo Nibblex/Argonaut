@@ -39,6 +39,14 @@ class FileListMixin:
         )
         self.add_paths(paths)
 
+    def add_folder(self):
+        """Adds every supported document in a folder, walking it the way a
+        dropped folder is walked: the two are the same act, and picking a
+        hundred files by hand in the file dialog is not."""
+        path = QFileDialog.getExistingDirectory(self, tr("select_folder"))
+        if path:
+            self.add_paths(self.expand_dirs([path]))
+
     def paths(self):
         return [
             self.file_list.topLevelItem(i).data(NAME_COL, FILE_PATH_ROLE)

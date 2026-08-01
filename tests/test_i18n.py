@@ -96,8 +96,11 @@ def test_about_text_renders(code):
 # menus that share a menu bar (or a parent menu) compete for the same
 # keyboard accelerators, so each group must use a distinct letter
 ACCELERATOR_GROUPS = (
-    ("menu bar", ["menu_language", "menu_settings", "menu_help"]),
-    ("Settings", ["menu_engine", "menu_theme", "menu_cache", "menu_history"]),
+    ("menu bar", ["menu_file", "menu_settings", "menu_help"]),
+    ("Settings", ["menu_preferences", "menu_engine", "menu_cache",
+                  "menu_history"]),
+    # what the user prefers, gathered apart from how translation is configured
+    ("Preferences", ["menu_language", "menu_theme"]),
 )
 
 

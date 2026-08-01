@@ -2,10 +2,11 @@ import os
 import re
 
 import pytest
-from PyQt5.QtWidgets import QFileDialog, QMessageBox
+from PyQt5.QtWidgets import QFileDialog, QMessageBox, QPushButton
 
 import argonaut.window
-from argonaut.i18n import tr
+from argonaut.i18n import LANGUAGES, set_language, tr
+from argonaut.translation import SUPPORTED_EXTS
 from argonaut.window import (
     FOLDER_COL,
     HIDEABLE_COLS,
@@ -1483,11 +1484,119 @@ def test_resource_indicator(window):
     assert window._resource_timer.interval() == 2000
 
 
+# --- the menu bar ---
+
+def test_the_menu_bar_leads_with_file_and_has_no_language_menu(window):
+    """"Language" at the top level named neither the documents the window is
+    about nor which of the two kinds of language it meant, with two combos
+    for the other kind right below it."""
+    titles = [a.text() for a in window.menuBar().actions()]
+    assert titles == [tr("menu_file"), tr("menu_settings"), tr("menu_help")]
+    assert tr("menu_language") not in titles
+
+
+def test_the_file_menu_carries_the_document_actions(window):
+    entries = [a.text() for a in window.file_menu.actions() if not a.isSeparator()]
+    assert entries == [
+        tr("file_add_files"),
+        tr("file_add_folder"),
+        tr("file_open_output"),
+        tr("file_quit"),
+    ]
+
+
+def test_preferences_gathers_what_the_user_likes(window):
+    """The theme sat between the CPU threads and the download units, as if
+    choosing a colour were part of configuring an engine. What the person
+    prefers is now one submenu, and how translation runs is the rest."""
+    prefs = [a.menu() for a in window.prefs_menu.actions() if a.menu()]
+    assert prefs == [window.lang_menu, window.theme_menu, window.speed_menu]
+
+    settings = [a.menu() for a in window.settings_menu.actions() if a.menu()]
+    assert settings[0] is window.prefs_menu
+    for gone in (window.lang_menu, window.theme_menu, window.speed_menu):
+        assert gone not in settings
+
+
+def test_the_interface_language_lives_under_preferences(window):
+    assert window.lang_menu.title() == tr("menu_language")
+    codes = [code for code, _ in LANGUAGES]
+    assert len(window.lang_menu.actions()) == len(codes)
+
+    spanish = window.lang_menu.actions()[codes.index("es")]
+    spanish.trigger()
+    assert window.settings_menu.title() == "&Configuración"
+    assert window.prefs_menu.title() == "&Preferencias"
+    assert window.lang_menu.title() == "I&dioma de la interfaz"
+
+
+def test_add_files_from_the_menu_opens_the_same_dialog(window, monkeypatch, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileNames",
+        staticmethod(lambda *a, **k: ([str(doc)], "")),
+    )
+    window.add_files_action.trigger()
+    assert window.paths() == [str(doc)]
+
+
+def test_add_folder_walks_it_the_way_a_dropped_one_is(window, monkeypatch, tmp_path):
+    """Picking a hundred documents by hand in the file dialog is not the same
+    act as handing over the folder they are in."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.txt").write_text("x")
+    (tmp_path / "sub" / "b.docx").write_text("x")
+    (tmp_path / "sub" / "notes.md").write_text("x")  # unsupported: left out
+    monkeypatch.setattr(
+        QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(tmp_path))
+    )
+    window.add_folder_action.trigger()
+    assert window.paths() == [
+        str(tmp_path / "a.txt"),
+        str(tmp_path / "sub" / "b.docx"),
+    ]
+
+
+def test_add_folder_cancelled_adds_nothing(window, monkeypatch):
+    monkeypatch.setattr(
+        QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: "")
+    )
+    window.add_folder_action.trigger()
+    assert window.paths() == []
+
+
+def test_open_output_folder_waits_for_a_folder_to_open(window, tmp_path):
+    window.file_menu.aboutToShow.emit()
+    assert not window.open_output_action.isEnabled()
+
+    window.output_dir = str(tmp_path)
+    window.file_menu.aboutToShow.emit()
+    assert window.open_output_action.isEnabled()
+
+
+def test_quit_closes_the_window(window, qtbot):
+    """The shortcut is asserted as the keys themselves: QKeySequence.Quit is
+    empty on X11 and Wayland, so comparing against it would hold just as well
+    for an action that has no shortcut at all."""
+    assert window.quit_action.shortcut().toString() == "Ctrl+Q"
+    with qtbot.waitExposed(window):
+        window.show()
+    assert window.isVisible()
+    window.quit_action.trigger()
+    assert not window.isVisible()
+
+
 def test_settings_menu_groups_engine_and_threads(window):
     assert window.settings_menu.title() == tr("menu_settings")
     actions = window.settings_menu.actions()
-    assert actions[0].menu() is window.engine_menu
-    assert actions[1].menu() is window.threads_menu
+    # by submenu rather than by index: the separators between the groups are
+    # actions too, and which slot each lands in is not what this is about
+    submenus = [a.menu() for a in actions if a.menu() is not None]
+    assert submenus[:3] == [
+        window.prefs_menu, window.engine_menu, window.threads_menu
+    ]
     assert window.pkg_install_action in actions
     assert window.nllb_remove_action in actions
     window.change_language("es")
