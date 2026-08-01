@@ -19,7 +19,6 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QStyle,
     QToolButton,
-    QTreeWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -35,7 +34,6 @@ from argonaut.i18n import (
     sorted_languages,
     tr,
 )
-from argonaut.translation import SUPPORTED_EXTS
 from argonaut.window.about_dialog import ISSUES_URL, MANUAL_URL, AboutDialog
 from argonaut.window.engine import EngineMixin
 from argonaut.window.file_list import (
@@ -47,6 +45,7 @@ from argonaut.window.file_list import (
     SIZE_COL,
     STATUS_COL,
     TYPE_COL,
+    FileTree,
 )
 from argonaut.window.files import FileListMixin
 from argonaut.window.theme import THEMES, apply_theme, current_theme
@@ -297,12 +296,12 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
         self.select_defaults()
 
         # --- file list ---
-        self.file_list = QTreeWidget()
+        self.file_list = FileTree()
         self.file_list.setColumnCount(len(COLUMN_KEYS))
         self.file_list.setRootIsDecorated(False)  # flat list, no expand arrows
         self.file_list.setUniformRowHeights(True)
         self.file_list.setAllColumnsShowFocus(True)
-        self.file_list.setSelectionMode(QTreeWidget.ExtendedSelection)
+        self.file_list.setSelectionMode(FileTree.ExtendedSelection)
         # sortable headers; -1 keeps insertion order until a header is clicked
         self.file_list.setSortingEnabled(True)
         self.file_list.sortByColumn(-1, Qt.AscendingOrder)
@@ -323,11 +322,6 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
         self.total_label = QLabel()
         self.total_label.setStyleSheet("color: gray;")
         layout.addWidget(self.total_label)
-
-        self.hint = QLabel()
-        self.hint.setWordWrap(True)
-        self.hint.setStyleSheet("color: gray; font-size: 11px;")
-        layout.addWidget(self.hint)
 
         files_row = QHBoxLayout()
         self.add_btn = QPushButton()
@@ -577,7 +571,7 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
             if state:
                 item.setText(STATUS_COL, tr(f"status_{state}"))
             self._render_cache_tooltip(item)
-        self.hint.setText(tr("hint", formats=" ".join(SUPPORTED_EXTS)))
+        self.file_list.retranslate()  # the empty-list placeholder inside it
         self.update_total_size()
         self._render_batch_cache_tooltip()
         self.add_btn.setText(tr("add"))

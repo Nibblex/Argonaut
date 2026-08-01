@@ -158,10 +158,18 @@ class FileListMixin:
         self.update_total_size()
 
     def dragEnterEvent(self, event):
+        """Drops land anywhere on the window, but the file list is where they
+        end up, so that is what lights up while the drag is overhead."""
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
+            self.file_list.set_drag_active(True)
+
+    def dragLeaveEvent(self, event):
+        self.file_list.set_drag_active(False)
+        super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
+        self.file_list.set_drag_active(False)
         self.add_paths(
             self.expand_dirs(
                 url.toLocalFile()

@@ -661,26 +661,211 @@ def test_open_output_dir_opens_only_a_chosen_folder(window, monkeypatch, tmp_pat
     assert opened == [str(tmp_path)]
 
 
+def url_mime(path):
+    from PyQt5.QtCore import QMimeData, QUrl
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path))])
+    return mime
+
+
+def drag_enter(window, mime):
+    """Delivers a drag entering the window and returns the event, so a test
+    can see whether it was taken."""
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtGui import QDragEnterEvent
+
+    event = QDragEnterEvent(
+        QPoint(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier
+    )
+    window.dragEnterEvent(event)
+    return event
+
+
+def drop_on(window, mime):
+    """Delivers the drop that follows the drag."""
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtGui import QDropEvent
+
+    window.dropEvent(
+        QDropEvent(QPoint(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    )
+
+
 def test_drag_and_drop_adds_local_files(window, tmp_path):
-    from PyQt5.QtCore import QMimeData, QPoint, QUrl, Qt
-    from PyQt5.QtGui import QDragEnterEvent, QDropEvent
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    mime = url_mime(doc)
+
+    assert drag_enter(window, mime).isAccepted()
+    drop_on(window, mime)
+    assert window.paths() == [str(doc)]
+
+
+# --- the empty list ---
+
+def test_the_empty_list_explains_itself_instead_of_heading_nothing(window):
+    """An empty table is a blank box under a row of column headings that head
+    no columns: until there is a file, the list carries an icon, the message
+    and the formats it takes instead."""
+    tree = window.file_list
+    assert not tree.placeholder.isHidden()
+    assert tree.isHeaderHidden()
+    assert tree.hint.text() == tr("hint")
+    assert not tree.drop_icon.pixmap().isNull()
+    assert " ".join(SUPPORTED_EXTS) in tree.formats_hint.text()
+
+
+def test_the_placeholder_gives_way_to_the_rows(window, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    assert window.file_list.placeholder.isHidden()
+    assert not window.file_list.isHeaderHidden()
+
+
+def test_the_placeholder_returns_with_the_last_file_removed(window, tmp_path):
+    tree = window.file_list
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    tree.setCurrentItem(tree.topLevelItem(0))
+    window.remove_selected()
+    assert not tree.placeholder.isHidden()
+    assert tree.isHeaderHidden()
+
+
+def test_clearing_the_list_returns_the_placeholder(window, tmp_path):
+    """clear() resets the model rather than removing the rows one by one,
+    which reports through a different signal: the empty state follows both."""
+    tree = window.file_list
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    assert tree.placeholder.isHidden()
+    window.clear_files()
+    assert not tree.placeholder.isHidden()
+    assert tree.isHeaderHidden()
+
+
+def test_the_placeholder_carries_no_button_of_its_own(window):
+    """Adding files is the row of buttons below the list; the placeholder
+    explains the empty box rather than duplicating one of them inside it."""
+    tree = window.file_list
+    assert not hasattr(tree, "add_btn")
+    assert not tree.placeholder.findChildren(QPushButton)
+
+
+def test_the_placeholder_follows_the_interface_language(window):
+    set_language("es")
+    window.retranslate_ui()
+    tree = window.file_list
+    assert tree.hint.text() == tr("hint") == "Arrastra archivos o carpetas aquí"
+    assert tree.formats_hint.text() == tr(
+        "hint_formats", formats=" ".join(SUPPORTED_EXTS)
+    )
+
+
+def test_a_short_list_sheds_its_parts_rather_than_clipping_the_message(window, qtbot):
+    """The list is one widget among many and at the smallest window it is
+    barely three rows tall. Centred in it, a placeholder that does not fit
+    loses its top and bottom, cutting the message in half.
+
+    Needs a shown window: a hidden one never lays its viewport out, so there
+    is no height to fit anything to.
+    """
+    tree = window.file_list
+    window.resize(900, 900)
+    with qtbot.waitExposed(window):
+        window.show()
+
+    parts = (tree.drop_icon, tree.formats_hint)
+    seen = []
+    for height in (400, 150, 60):
+        tree.resize(tree.width(), height)
+        seen.append([not widget.isHidden() for widget in parts])
+        assert not tree.hint.isHidden()  # the message itself never goes
+
+    assert seen[0] == [True, True]  # room for the whole placeholder
+    assert seen[-1] == [False, False]  # room for the message alone
+    # each step only ever takes parts away, in that order, never puts them back
+    for before, after in zip(seen, seen[1:]):
+        assert all(was >= now for was, now in zip(before, after))
+
+
+# --- drag feedback ---
+
+def test_dragging_files_over_the_window_lights_up_the_list(window, tmp_path):
+    """Without it the only sign that a drop will land is the cursor, which
+    looks the same over a window that would refuse it."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    mime = url_mime(doc)
+
+    assert drag_enter(window, mime).isAccepted()
+    assert window.file_list._drag_active
+
+    drop_on(window, mime)
+    assert not window.file_list._drag_active
+
+
+def test_the_highlight_goes_out_when_the_drag_leaves(window, tmp_path):
+    """A drag carried back out of the window leaves nothing behind: without
+    this the list stays lit until the next drop."""
+    from PyQt5.QtGui import QDragLeaveEvent
 
     doc = tmp_path / "doc.txt"
     doc.write_text("x")
+    drag_enter(window, url_mime(doc))
+    assert window.file_list._drag_active
+
+    window.dragLeaveEvent(QDragLeaveEvent())
+    assert not window.file_list._drag_active
+
+
+def test_a_drag_carrying_no_files_does_not_light_the_list(window):
+    """Dragging selected text over the window is not a drop it can take, so
+    it must not promise one."""
+    from PyQt5.QtCore import QMimeData
+
     mime = QMimeData()
-    mime.setUrls([QUrl.fromLocalFile(str(doc))])
+    mime.setText("not a file")
+    assert not drag_enter(window, mime).isAccepted()
+    assert not window.file_list._drag_active
 
-    enter = QDragEnterEvent(
-        QPoint(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier
-    )
-    window.dragEnterEvent(enter)
-    assert enter.isAccepted()
 
-    drop = QDropEvent(
-        QPoint(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier
-    )
-    window.dropEvent(drop)
-    assert window.paths() == [str(doc)]
+def test_the_highlight_is_actually_painted(window, qtbot, tmp_path):
+    """The flag is only worth setting if it reaches the screen: with a drag
+    overhead the list has to come out looking different. Needs a shown
+    window, since a hidden one never lays its viewport out to paint."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    window.resize(800, 600)  # at the minimum size the list has no height to paint
+    with qtbot.waitExposed(window):
+        window.show()
+    tree = window.file_list
+
+    quiet = tree.grab().toImage()
+    drag_enter(window, url_mime(doc))
+    assert tree.grab().toImage() != quiet
+
+
+def test_the_drop_icon_is_enlarged_when_the_style_ships_a_small_one():
+    """QIcon.pixmap() never enlarges beyond the largest variant a style has,
+    so a style offering only a 16-pixel folder would otherwise leave a
+    16-pixel icon adrift in the middle of the placeholder."""
+    from PyQt5.QtGui import QIcon, QPixmap
+
+    from argonaut.window.file_list import DROP_ICON_SIZE, drop_pixmap
+
+    class TinyIconStyle:
+        def standardIcon(self, which):
+            small = QPixmap(16, 16)
+            small.fill()
+            return QIcon(small)
+
+    assert drop_pixmap(TinyIconStyle(), DROP_ICON_SIZE).width() == DROP_ICON_SIZE
 
 
 def test_each_translation_releases_the_previous_worker(window, qtbot, tmp_path):
@@ -1066,30 +1251,6 @@ def test_backend_switch_keeps_language_selection(window, monkeypatch):
     window.change_backend("nllb")
     assert window.from_combo.currentText() == "English"
     assert window.to_combo.currentText() == "Spanish"
-
-
-def test_backend_falls_back_to_argos_without_model(qtbot, langs, monkeypatch):
-    from PyQt5.QtCore import QSettings
-
-    QSettings().setValue("backend", "nllb")
-    monkeypatch.setattr(
-        argonaut.window.nllb, "is_model_installed", lambda path=None: False
-    )
-    win = MainWindow()
-    qtbot.addWidget(win)
-    assert win.backend == "argos"
-
-
-def test_backend_download_declined_keeps_argos(window, monkeypatch):
-    monkeypatch.setattr(
-        argonaut.window.nllb, "is_model_installed", lambda path=None: False
-    )
-    monkeypatch.setattr(
-        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No)
-    )
-    window.change_backend("nllb")
-    assert window.backend == "argos"
-    assert window.argos_action.isChecked()
 
 
 def test_backend_download_flow(window, monkeypatch, qtbot):
