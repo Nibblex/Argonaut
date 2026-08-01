@@ -98,8 +98,11 @@ class TranslationRunMixin:
 
     def clear_status(self):
         self._status_parts = []
-        self.status.setText(tr("ready"))
+        # hidden first: what replaces the summary is whatever the window has
+        # to say for itself now, which _refresh_ready_state will not write
+        # while a summary is still on screen
         self.clear_status_btn.setVisible(False)
+        self._refresh_ready_state()
 
     def set_busy(self, busy):
         if busy:
@@ -107,9 +110,12 @@ class TranslationRunMixin:
         # the running batch keeps the pair it was started with, so leaving
         # these editable lets the window claim a translation that is not the
         # one under way
-        for widget in (self.from_combo, self.to_combo, self.swap_btn):
-            widget.setEnabled(not busy)
-        self.translate_btn.setEnabled(not busy)
+        self.from_combo.setEnabled(not busy)
+        self.to_combo.setEnabled(not busy)
+        # coming out of a run does not mean these are usable again: the files
+        # or the languages may have changed underneath them
+        self.swap_btn.setEnabled(not busy and self.can_swap_languages())
+        self.translate_btn.setEnabled(not busy and self.can_translate())
         self.cancel_btn.setVisible(busy)
         self.cancel_btn.setEnabled(busy)
         self.progress.setVisible(busy)

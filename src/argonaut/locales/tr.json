@@ -100,6 +100,7 @@
   "same_language": "Kaynak ve hedef dil aynı.",
   "no_model_title": "Model yok",
   "no_model_msg": "{src} dilinden {dst} diline çeviri için kurulu model yok.",
+  "pivot_pair": "{src} dilinden {dst} diline doğrudan model yok. Çeviri {via} üzerinden yapılacak, bir miktar doğruluk kaybıyla.",
   "cancelling": "İptal ediliyor…",
   "translating": "{name} çevriliyor… ({total} dosyadan {index}.)",
   "detected": "algılanan dil: {name}",

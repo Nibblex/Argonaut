@@ -418,6 +418,7 @@ def test_cancelling_keeps_the_phase_next_to_the_message(window):
 def test_language_choice_is_locked_while_translating(window):
     """The batch keeps the pair it started with, so an editable combo would
     have the window claim a translation that is not the one running."""
+    window.from_combo.setCurrentIndex(1)  # a source, so swapping applies at all
     window.set_busy(True)
     assert not window.from_combo.isEnabled()
     assert not window.to_combo.isEnabled()
@@ -851,6 +852,246 @@ def test_the_highlight_is_actually_painted(window, qtbot, tmp_path):
     assert tree.grab().toImage() != quiet
 
 
+# --- buttons follow what there is to act on ---
+
+def test_an_empty_list_leaves_its_buttons_disabled(window):
+    """Remove, Clear and Translate all act on files: with none loaded there is
+    nothing for any of them to do, and offering them says otherwise."""
+    assert not window.remove_btn.isEnabled()
+    assert not window.open_file_btn.isEnabled()
+    assert not window.clear_btn.isEnabled()
+    assert not window.translate_btn.isEnabled()
+    assert window.add_btn.isEnabled()  # the one way out of an empty list
+
+
+def test_adding_a_file_enables_clear_and_translate_but_not_remove(window, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    assert window.clear_btn.isEnabled()
+    assert window.translate_btn.isEnabled()
+    assert not window.remove_btn.isEnabled()  # nothing selected yet
+    assert not window.open_file_btn.isEnabled()
+
+
+def test_selecting_a_row_enables_remove_and_open(window, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    tree = window.file_list
+    tree.setCurrentItem(tree.topLevelItem(0))
+    assert window.remove_btn.isEnabled()
+    assert window.open_file_btn.isEnabled()
+    tree.clearSelection()
+    assert not window.remove_btn.isEnabled()
+    assert not window.open_file_btn.isEnabled()
+
+
+def test_emptying_the_list_disables_them_again(window, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    tree = window.file_list
+    tree.setCurrentItem(tree.topLevelItem(0))
+    window.clear_files()
+    assert not window.clear_btn.isEnabled()
+    assert not window.remove_btn.isEnabled()
+    assert not window.translate_btn.isEnabled()
+
+
+def test_translate_is_off_for_a_language_with_itself(window, tmp_path):
+    """The pair is answered for before the run rather than after: pressing
+    Translate only to be told the two are the same is a wasted press."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    window.from_combo.setCurrentIndex(1)  # English
+    window.to_combo.setCurrentIndex(0)  # English
+    assert not window.translate_btn.isEnabled()
+
+
+def test_translate_is_off_for_a_pair_with_no_model(window, tmp_path):
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    window.from_combo.setCurrentIndex(2)  # Spanish: no es->en model registered
+    window.to_combo.setCurrentIndex(0)  # English
+    assert not window.translate_btn.isEnabled()
+    window.from_combo.setCurrentIndex(1)  # English -> Spanish is installed
+    window.to_combo.setCurrentIndex(1)
+    assert window.translate_btn.isEnabled()
+
+
+def test_detect_language_leaves_translate_on(window, tmp_path):
+    """With the source detected per file the pair is not known until the file
+    has been read, so the button cannot answer for it and must not pretend
+    to; a file it turns out to have no model for fails as that file."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    window.from_combo.setCurrentIndex(0)  # Detect language
+    window.to_combo.setCurrentIndex(0)  # English, which no installed pair reaches
+    assert window.translate_btn.isEnabled()
+
+
+def test_swap_is_off_while_the_source_is_detected(window):
+    """There is no source language to move across, and the button was already
+    a no-op there: it read as broken rather than as inapplicable."""
+    assert window.from_combo.currentIndex() == 0  # Detect language
+    assert not window.swap_btn.isEnabled()
+
+    window.from_combo.setCurrentIndex(1)  # English
+    assert window.swap_btn.isEnabled()
+
+    window.from_combo.setCurrentIndex(0)
+    assert not window.swap_btn.isEnabled()
+
+
+def test_the_status_says_why_translate_is_off(window, tmp_path):
+    """A greyed-out button with "Ready." under it is the window refusing
+    without saying why. Each reason it refuses for names itself, and the
+    strings are the ones the pre-flight dialogs already use."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+
+    assert window.status.text() == tr("no_files_msg")
+
+    window.add_paths([str(doc)])
+    assert window.status.text() == tr("ready")
+
+    window.from_combo.setCurrentIndex(1)  # English
+    window.to_combo.setCurrentIndex(0)  # English
+    assert window.status.text() == tr("same_language")
+
+    window.from_combo.setCurrentIndex(2)  # Spanish: no es->en model registered
+    assert window.status.text() == tr("no_model_msg", src="Spanish", dst="English")
+
+    window.from_combo.setCurrentIndex(1)  # English -> Spanish is installed
+    window.to_combo.setCurrentIndex(1)
+    assert window.status.text() == tr("ready")
+
+
+def test_the_reason_and_the_button_cannot_disagree(window, tmp_path):
+    """Both read the same answer, so a disabled button always has a reason
+    and an enabled one never shows a complaint."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    for step in (
+        lambda: None,
+        lambda: window.add_paths([str(doc)]),
+        lambda: window.from_combo.setCurrentIndex(1),
+        lambda: window.to_combo.setCurrentIndex(0),
+        lambda: window.from_combo.setCurrentIndex(2),
+        lambda: window.clear_files(),
+    ):
+        step()
+        blocked = window.translate_blocker() is not None
+        assert window.translate_btn.isEnabled() is not blocked
+        assert (window.status.text() != tr("ready")) is blocked
+
+
+@pytest.fixture
+def pivot_window(qtbot, monkeypatch):
+    """A window whose Albanian reaches Spanish only through English, which is
+    what Argos hands back with the usual en↔X packages and no sq→es one."""
+    from argostranslate.translate import CompositeTranslation
+
+    english = FakeLanguage("en", "English")
+    spanish = FakeLanguage("es", "Spanish")
+    albanian = FakeLanguage("sq", "Albanian")
+    english._translations["es"] = FakeTranslation(english, spanish)
+    albanian._translations["en"] = FakeTranslation(albanian, english)
+    albanian._translations["es"] = CompositeTranslation(
+        albanian.get_translation(english), english.get_translation(spanish)
+    )
+    monkeypatch.setattr(
+        argonaut.window.argostranslate.translate,
+        "get_installed_languages",
+        fake_installed_languages([albanian, english, spanish]),
+    )
+    win = MainWindow()
+    qtbot.addWidget(win)
+    win.add_paths(["/a/doc.txt"])
+    return win
+
+
+def test_a_pair_reached_through_a_third_language_says_so(pivot_window):
+    """Argos composes a pair it has no package for out of two that it has, so
+    the text is translated twice. Left unsaid, the detour reads as the engine
+    being bad at the language rather than as a hop nobody mentioned."""
+    win = pivot_window
+    win.from_combo.setCurrentIndex(1)  # Albanian
+    win.to_combo.setCurrentIndex(2)  # Spanish
+    assert win.translate_btn.isEnabled()  # it does translate: a note, not a bar
+    assert win.status.text() == tr(
+        "pivot_pair", src="Albanian", dst="Spanish", via="English"
+    )
+
+
+def test_a_direct_pair_says_nothing(pivot_window):
+    win = pivot_window
+    win.from_combo.setCurrentIndex(2)  # English
+    win.to_combo.setCurrentIndex(2)  # Spanish: a package of its own
+    assert win.translate_btn.isEnabled()
+    assert win.status.text() == tr("ready")
+
+
+def test_detected_source_cannot_be_told_it_pivots(pivot_window):
+    """The pair is not known until each file is read, so there is no detour
+    to warn about yet."""
+    win = pivot_window
+    win.from_combo.setCurrentIndex(0)  # Detect language
+    win.to_combo.setCurrentIndex(2)  # Spanish
+    assert win.status.text() == tr("ready")
+
+
+def test_a_blocked_pair_reports_that_rather_than_the_detour(pivot_window):
+    """A reason it cannot run outranks a caveat about how it would."""
+    win = pivot_window
+    win.from_combo.setCurrentIndex(1)  # Albanian
+    win.to_combo.setCurrentIndex(2)  # Spanish, which it reaches through English
+    assert win.status.text() != tr("ready")
+    win.clear_files()
+    assert win.status.text() == tr("no_files_msg")
+
+
+def test_no_packages_outranks_the_rest(window, monkeypatch, tmp_path):
+    """With nothing installed, telling the user to add a document sends them
+    the wrong way: the packages are what is missing."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    window.languages = []
+    window._refresh_ready_state()
+    assert not window.translate_btn.isEnabled()
+    assert window.status.text() == tr("no_packages")
+
+
+def test_clearing_a_summary_restores_the_reason_not_ready(window):
+    """The button that dismisses a finished batch's summary used to write
+    "Ready." over it whatever the window could actually do."""
+    window.status.setText("a summary")
+    window.clear_status_btn.setVisible(True)
+    window.clear_status()
+    assert window.clear_status_btn.isHidden()
+    assert window.status.text() == tr("no_files_msg")  # the list is empty
+
+
+def test_finishing_a_run_does_not_switch_translate_back_on_blindly(window, tmp_path):
+    """Leaving the busy state used to enable it regardless; if the files went
+    away while the batch ran there is nothing left for it to do."""
+    doc = tmp_path / "doc.txt"
+    doc.write_text("x")
+    window.add_paths([str(doc)])
+    assert window.translate_btn.isEnabled()
+
+    window.set_busy(True)
+    assert not window.translate_btn.isEnabled()
+    window.clear_files()
+    window.set_busy(False)
+    assert not window.translate_btn.isEnabled()
+
+
 def test_the_drop_icon_is_enlarged_when_the_style_ships_a_small_one():
     """QIcon.pixmap() never enlarges beyond the largest variant a style has,
     so a style offering only a 16-pixel folder would otherwise leave a
@@ -977,6 +1218,7 @@ def test_failed_file_lands_in_the_results_and_the_status_column(window):
 
 def test_finished_summary_lists_results_and_errors(window):
     window.worker = None
+    window.add_paths(["/a/doc.txt"])  # a batch that finished had files in it
     window.results = [
         ("ok", "/a/doc_es.txt"),
         ("skipped", "/a/done_es.txt"),
@@ -1253,6 +1495,84 @@ def test_backend_switch_keeps_language_selection(window, monkeypatch):
     assert window.to_combo.currentText() == "Spanish"
 
 
+def test_nllb_offers_every_pair_it_speaks(qtbot, monkeypatch):
+    """NLLB-200 is one model that translates between any two of its languages
+    rather than a model per pair, so nothing can be missing for it.
+
+    That falls out of asking the engine — its get_translation answers for
+    every pair — rather than of a special case on the backend's name, which
+    is what a third engine would have to be added to.
+    """
+    from PyQt5.QtCore import QSettings
+
+    # the engine loads lazily, so its languages exist without a model on disk
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: True
+    )
+    QSettings().setValue("backend", "nllb")
+    win = MainWindow()
+    qtbot.addWidget(win)
+    assert win.backend == "nllb"
+    win.add_paths(["/a/doc.txt"])
+
+    sources = win.from_combo.count() - 1  # minus "Detect language"
+    assert sources > 20, "expected the full NLLB set, not a stand-in"
+    for fi in range(1, win.from_combo.count()):
+        win.from_combo.setCurrentIndex(fi)
+        for ti in range(win.to_combo.count()):
+            win.to_combo.setCurrentIndex(ti)
+            same = win.from_combo.currentData() is win.to_combo.currentData()
+            # the one pair that stays off is a language with itself, which no
+            # engine makes meaningful
+            assert win.translate_btn.isEnabled() is not same
+            assert (win.status.text() == tr("same_language")) is same
+
+
+def test_switching_to_nllb_unblocks_a_pair_argos_has_no_model_for(window, monkeypatch):
+    """The pair the Argos packages cannot serve is one NLLB translates like
+    any other, so changing engine has to lift the refusal with it."""
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: True
+    )
+    window.add_paths(["/a/doc.txt"])
+    window.from_combo.setCurrentIndex(2)  # Spanish: no es->en package
+    window.to_combo.setCurrentIndex(0)  # English
+    assert not window.translate_btn.isEnabled()
+
+    window.apply_backend("nllb")
+    assert window.from_combo.currentText() == "Spanish"  # the pair is kept
+    assert window.to_combo.currentText() == "English"
+    assert window.translate_btn.isEnabled()
+    assert window.status.text() == tr("ready")
+
+    window.apply_backend("argos")
+    assert not window.translate_btn.isEnabled()
+
+
+def test_backend_falls_back_to_argos_without_model(qtbot, langs, monkeypatch):
+    from PyQt5.QtCore import QSettings
+
+    QSettings().setValue("backend", "nllb")
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: False
+    )
+    win = MainWindow()
+    qtbot.addWidget(win)
+    assert win.backend == "argos"
+
+
+def test_backend_download_declined_keeps_argos(window, monkeypatch):
+    monkeypatch.setattr(
+        argonaut.window.nllb, "is_model_installed", lambda path=None: False
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No)
+    )
+    window.change_backend("nllb")
+    assert window.backend == "argos"
+    assert window.argos_action.isChecked()
+
+
 def test_backend_download_flow(window, monkeypatch, qtbot):
     monkeypatch.setattr(
         argonaut.window.nllb, "is_model_installed", lambda path=None: False
@@ -1274,6 +1594,7 @@ def test_backend_download_flow(window, monkeypatch, qtbot):
         ],
     )
 
+    window.add_paths(["/a/doc.txt"])  # Translate needs something to translate
     window.change_backend("nllb")
     qtbot.waitUntil(lambda: window.backend == "nllb", timeout=5000)
     qtbot.waitUntil(lambda: window.translate_btn.isEnabled(), timeout=5000)
@@ -1839,6 +2160,7 @@ def test_installed_packages_refresh_the_window(qtbot, monkeypatch):
     )
     win = MainWindow()
     qtbot.addWidget(win)
+    win.add_paths(["/a/doc.txt"])  # so the packages are the only thing missing
     assert not win.translate_btn.isEnabled()
 
     monkeypatch.setattr(

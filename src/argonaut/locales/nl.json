@@ -100,6 +100,7 @@
   "same_language": "De bron- en doeltaal zijn hetzelfde.",
   "no_model_title": "Geen model",
   "no_model_msg": "Geen model geïnstalleerd om van {src} naar {dst} te vertalen.",
+  "pivot_pair": "Geen direct model van {src} naar {dst}. Er wordt via {via} vertaald, wat wat nauwkeurigheid kost.",
   "cancelling": "Annuleren…",
   "translating": "{name} wordt vertaald… (bestand {index} van {total})",
   "detected": "gedetecteerde taal: {name}",

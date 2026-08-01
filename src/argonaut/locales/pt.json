@@ -100,6 +100,7 @@
   "same_language": "O idioma de origem e o de destino são o mesmo.",
   "no_model_title": "Sem modelo",
   "no_model_msg": "Não há um modelo instalado para traduzir de {src} para {dst}.",
+  "pivot_pair": "Não há um modelo direto de {src} para {dst}. A tradução passará por {via}, com alguma perda de precisão.",
   "cancelling": "Cancelando…",
   "translating": "Traduzindo {name}… (arquivo {index} de {total})",
   "detected": "idioma detectado: {name}",

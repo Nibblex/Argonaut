@@ -414,8 +414,15 @@ class MainWindow(FileListMixin, EngineMixin, TranslationRunMixin, QMainWindow):
         self._resource_timer.start(2000)
         self.update_resource_usage()
 
-        if not self.languages:
-            self.translate_btn.setEnabled(False)
+        # every control that acts on something follows what is there to act
+        # on. Connected here rather than where the widgets are built: these
+        # fire on the way past and the handlers touch the whole window
+        self.file_list.rows_changed.connect(self.refresh_file_buttons)
+        self.file_list.rows_changed.connect(self._refresh_ready_state)
+        self.file_list.itemSelectionChanged.connect(self.refresh_file_buttons)
+        self.from_combo.currentIndexChanged.connect(self._refresh_ready_state)
+        self.to_combo.currentIndexChanged.connect(self._refresh_ready_state)
+        self.refresh_file_buttons()
 
         self.retranslate_ui()
         self.restore_settings()

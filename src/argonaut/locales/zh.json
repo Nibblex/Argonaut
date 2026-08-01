@@ -100,6 +100,7 @@
   "same_language": "源语言与目标语言相同。",
   "no_model_title": "没有模型",
   "no_model_msg": "没有可用于从 {src} 翻译到 {dst} 的模型。",
+  "pivot_pair": "没有从 {src} 到 {dst} 的直接模型。将经由{via}翻译，准确度会有所下降。",
   "cancelling": "正在取消…",
   "translating": "正在翻译 {name}…（第 {index} 个文件，共 {total} 个）",
   "detected": "检测到的语言：{name}",
